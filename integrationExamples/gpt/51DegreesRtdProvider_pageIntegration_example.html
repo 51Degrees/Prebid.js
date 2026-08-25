@@ -1,22 +1,22 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <!-- Delegates the high-entropy client hints to the 51Degrees cloud, and must
+         be the first element in the head: the browser only honours a Delegate-CH
+         meta created by the HTML parser, before any script, style or link has
+         run. One inserted from script is ignored, so this cannot be built from
+         CLOUD_ORIGIN below. Point the example at another deployment and you have
+         to edit the origin here as well. -->
+    <meta http-equiv="Delegate-CH" content="sec-ch-ua-full-version-list https://cloud.51degrees.com; sec-ch-ua-model https://cloud.51degrees.com; sec-ch-ua-platform https://cloud.51degrees.com; sec-ch-ua-platform-version https://cloud.51degrees.com">
     <script>
         var RESOURCE_KEY = new URLSearchParams(location.search).get('resourceKey') || '';
 
-        // Cloud origin defaults to production; override with ?cloud=... to
-        // point the whole page (script, client-hint delegation and PMP) at a
-        // test deployment without editing this file.
+        // Cloud origin defaults to production; override with ?cloud=... to point
+        // the script and PMP at a test deployment without editing this file. The
+        // client-hint delegation is not covered by the override - see the meta
+        // above.
         var CLOUD_ORIGIN = (new URLSearchParams(location.search).get('cloud') || 'https://cloud.51degrees.com')
             .trim().replace(/\/+$/, '');
-
-        // Delegate-CH must be written before the script tag below, so that the
-        // high-entropy client hints are delegated to whichever origin is in
-        // play. A static meta would pin this to one deployment.
-        document.write('<meta http-equiv="Delegate-CH" content="' +
-            ['sec-ch-ua-full-version-list', 'sec-ch-ua-model', 'sec-ch-ua-platform', 'sec-ch-ua-platform-version']
-                .map(function (h) { return h + ' ' + CLOUD_ORIGIN; }).join('; ') +
-            '">');
 
         // PMP localStorage contract, mirroring resolveIdUsage() in
         // modules/51DegreesRtdProvider.js. The page owns this read because in
@@ -60,13 +60,33 @@
         // Changing it changes every Hashed Email 51Did derived from it.
         window.fodEvidence['id.salt'] = 'YWI=';
 
+        // prebid.js is loaded only once the 51Degrees script has settled. The
+        // module's on-page path is a synchronous window.fod check at
+        // getBidRequestData time, so a script still in flight when the first
+        // auction starts is indistinguishable from no on-page integration at
+        // all, and the example silently demonstrates the fallback instead. On
+        // error there is nothing to wait for, but the page still has an auction
+        // to run.
+        function loadPrebid() {
+            var prebidScript = document.createElement('script');
+            prebidScript.src = '../../build/dev/prebid.js';
+            prebidScript.async = true;
+            document.head.appendChild(prebidScript);
+        }
+
         if (RESOURCE_KEY) {
             var ID_USAGE = resolveIdUsage();
             var scriptURL = CLOUD_ORIGIN + '/api/v4/' + RESOURCE_KEY + '.js';
             if (ID_USAGE) {
                 scriptURL += '?id.usage=' + encodeURIComponent(ID_USAGE);
             }
-            document.write('<script src="' + scriptURL + '"><\/script>');
+            var fodScript = document.createElement('script');
+            fodScript.src = scriptURL;
+            fodScript.onload = loadPrebid;
+            fodScript.onerror = loadPrebid;
+            document.head.appendChild(fodScript);
+        } else {
+            loadPrebid();
         }
 
         // A reload alone answers to the new preference only if the script is
@@ -117,7 +137,6 @@
         }
     </script>
     <script async src="https://securepubads.g.doubleclick.net/tag/js/gpt.js"></script>
-    <script async src="../../build/dev/prebid.js"></script>
     <meta charset="utf-8">
     <link rel="stylesheet" href="51DegreesRtdProvider_assets/examples-main.min.css">
     <script>
