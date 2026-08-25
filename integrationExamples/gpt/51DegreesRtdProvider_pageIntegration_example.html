@@ -60,34 +60,41 @@
         // Changing it changes every Hashed Email 51Did derived from it.
         window.fodEvidence['id.salt'] = 'YWI=';
 
-        // prebid.js is loaded only once the 51Degrees script has settled. The
-        // module's on-page path is a synchronous window.fod check at
-        // getBidRequestData time, so a script still in flight when the first
-        // auction starts is indistinguishable from no on-page integration at
-        // all, and the example silently demonstrates the fallback instead. On
-        // error there is nothing to wait for, but the page still has an auction
-        // to run.
-        function loadPrebid() {
-            var prebidScript = document.createElement('script');
-            prebidScript.src = '../../build/dev/prebid.js';
-            prebidScript.async = true;
-            document.head.appendChild(prebidScript);
-        }
+        var ID_USAGE = RESOURCE_KEY ? resolveIdUsage() : undefined;
 
-        if (RESOURCE_KEY) {
-            var ID_USAGE = resolveIdUsage();
+        // Injects the 51Degrees script and calls next() once it has settled, or
+        // immediately when there is no resource key and so no script to load. A
+        // failed load is not a reason to withhold next(): the page still has an
+        // auction to run, and the module reports whatever the script left behind
+        // in window.fod.errors.
+        function afterFodScript(next) {
+            if (!RESOURCE_KEY) {
+                next();
+                return;
+            }
             var scriptURL = CLOUD_ORIGIN + '/api/v4/' + RESOURCE_KEY + '.js';
             if (ID_USAGE) {
                 scriptURL += '?id.usage=' + encodeURIComponent(ID_USAGE);
             }
             var fodScript = document.createElement('script');
             fodScript.src = scriptURL;
-            fodScript.onload = loadPrebid;
-            fodScript.onerror = loadPrebid;
+            fodScript.onload = next;
+            fodScript.onerror = next;
             document.head.appendChild(fodScript);
-        } else {
-            loadPrebid();
         }
+
+        // prebid.js always loads, but never before the 51Degrees script has
+        // settled: the module's on-page path is a synchronous window.fod check
+        // at getBidRequestData time, so a script still in flight when the first
+        // auction starts is indistinguishable from no on-page integration at
+        // all, and the example would silently demonstrate the fallback instead.
+        // document.write used to give that ordering for free.
+        afterFodScript(function () {
+            var prebidScript = document.createElement('script');
+            prebidScript.src = '../../build/dev/prebid.js';
+            prebidScript.async = true;
+            document.head.appendChild(prebidScript);
+        });
 
         // A reload alone answers to the new preference only if the script is
         // made to ask the cloud again: on a cache hit it skips the POST and
