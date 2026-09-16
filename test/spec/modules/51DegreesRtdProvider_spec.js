@@ -27,6 +27,13 @@ const inject51DegreesMeta = () => {
   document.head.appendChild(meta);
 };
 
+// 51Dids for the tests that go through the script's onChange, which only
+// releases the auction once a value has the shape of a real 51Did.
+const ID_LIC_UID = 'AzUxZC5lcwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+/lic';
+const ID_GLOBAL_UID = 'AzUxZC5lcwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+/glb';
+const ID_HEM_LIC_UID = 'AzUxZC5lcwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+/hml';
+const ID_HEM_GLOBAL_UID = 'AzUxZC5lcwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+/hmg';
+
 describe('51DegreesRtdProvider', function() {
   const fiftyOneDegreesDevice = {
     screenpixelswidth: 5120,
@@ -983,7 +990,7 @@ describe('51DegreesRtdProvider', function() {
     });
 
     it('returns null for a working on-page integration', function() {
-      window.fod = { complete: () => {} };
+      window.fod = { onChange: () => {} };
       expect(getPageFodErrors()).to.be.null;
     });
 
@@ -994,7 +1001,7 @@ describe('51DegreesRtdProvider', function() {
 
     it('returns the errors reported by a failed script load', function() {
       // What the cloud actually serves on a 403: an errors-only fod object
-      // with no complete() method.
+      // with no onChange() method.
       window.fod = { errors: ["The resource key 'BAD_KEY' could not be found."] };
       expect(getPageFodErrors()).to.deep.equal(["The resource key 'BAD_KEY' could not be found."]);
     });
@@ -1023,7 +1030,7 @@ describe('51DegreesRtdProvider', function() {
       // Loading the module's own script creates window.fod, so mirror that
       // in the stub to make the script path behave like a real load.
       loadExternalScriptStub.callsFake((url, moduleType, moduleName, callback) => {
-        window.fod = { complete: (cb) => cb(fiftyOneDegreesData) };
+        window.fod = { onChange: (cb) => cb(fiftyOneDegreesData) };
         // Mirror adloader's runCallback: a bare function is the success
         // callback, the object form gets success() or error().
         if (typeof callback === 'function') {
@@ -1097,9 +1104,9 @@ describe('51DegreesRtdProvider', function() {
       const data51 = {
         device: fiftyOneDegreesDevice,
         ip: { ip: '5.6.7.8', locationconfidence: 'high', countrycode3: 'USA' },
-        fodid: { idproblic: 'lic-uid', idprobglobal: 'global-uid' },
+        fodid: { idproblic: ID_LIC_UID, idprobglobal: ID_GLOBAL_UID },
       };
-      window.fod = { complete: (cb) => cb(data51) };
+      window.fod = { onChange: (cb) => cb(data51) };
 
       const callback = sinon.spy();
       const moduleConfig = {
@@ -1118,14 +1125,14 @@ describe('51DegreesRtdProvider', function() {
       expect(reqBidsConfigObj.ortb2Fragments.global.device.geo.country).to.equal('USA');
       expect(reqBidsConfigObj.ortb2Fragments.global.user.eids).to.have.lengthOf(1);
       expect(reqBidsConfigObj.ortb2Fragments.global.user.eids[0].uids)
-        .to.deep.equal([{ id: 'lic-uid', atype: 1 }, { id: 'global-uid', atype: 1 }]);
+        .to.deep.equal([{ id: ID_LIC_UID, atype: 1 }, { id: ID_GLOBAL_UID, atype: 1 }]);
       expect(reqBidsConfigObj.ortb2Fragments.global.user.eids[0].ext.tdl)
         .to.deep.equal([MODEL_TERMS_URL, 'https://tdl.example/x']);
     });
 
     it('does not overwrite a publisher-set device.ip / device.ipv6', async function() {
       window.fod = {
-        complete: (cb) => cb({ ip: { ip: '5.6.7.8', ipv6: 'fe80::51d', locationconfidence: 'high' } }),
+        onChange: (cb) => cb({ ip: { ip: '5.6.7.8', ipv6: 'fe80::51d', locationconfidence: 'high' } }),
       };
       reqBidsConfigObj.ortb2Fragments.global.device = { ip: '10.0.0.1', ipv6: 'fe80::pub' };
       const callback = sinon.spy();
@@ -1157,9 +1164,9 @@ describe('51DegreesRtdProvider', function() {
     it('consumes an on-page integration automatically', async function() {
       const data51 = {
         device: fiftyOneDegreesDevice,
-        fodid: { idproblic: 'lic-uid', idhemlic: 'hem-lic-uid', idhemglobal: 'hem-global-uid' },
+        fodid: { idproblic: ID_LIC_UID, idhemlic: ID_HEM_LIC_UID, idhemglobal: ID_HEM_GLOBAL_UID },
       };
-      window.fod = { complete: (cb) => cb(data51) };
+      window.fod = { onChange: (cb) => cb(data51) };
       loadExternalScriptStub.resetHistory();
 
       const callback = sinon.spy();
@@ -1175,9 +1182,54 @@ describe('51DegreesRtdProvider', function() {
       expect(eids[1].mm).to.equal(3);
     });
 
+    it('merges the device at once and waits for the 51Did before releasing the auction', async function() {
+      let listener;
+      window.fod = { onChange: (cb) => { listener = cb; } };
+      const callback = sinon.spy();
+
+      getBidRequestData(reqBidsConfigObj, callback, { params: {} }, {});
+      // The first answer: the key entitles a 51Did, but none exists yet.
+      listener({ device: fiftyOneDegreesDevice, fodid: { idprobglobal: null } });
+      expect(callback.called, 'released before the 51Did').to.be.false;
+      expect(reqBidsConfigObj.ortb2Fragments.global.device.make).to.equal('Apple');
+      expect(reqBidsConfigObj.ortb2Fragments.global.user).to.be.undefined;
+
+      // The refreshed answer, once the preference is known.
+      listener({ device: fiftyOneDegreesDevice, fodid: { idprobglobal: ID_GLOBAL_UID } });
+      expect(callback.calledOnce).to.be.true;
+      expect(reqBidsConfigObj.ortb2Fragments.global.user.eids[0].uids)
+        .to.deep.equal([{ id: ID_GLOBAL_UID, atype: 1 }]);
+
+      // A later refresh changes nothing, because the auction has gone.
+      listener({ device: fiftyOneDegreesDevice, fodid: { idprobglobal: ID_LIC_UID } });
+      expect(callback.calledOnce).to.be.true;
+      expect(reqBidsConfigObj.ortb2Fragments.global.user.eids).to.have.lengthOf(1);
+    });
+
+    it('does not take a null reason sentence for a 51Did', async function() {
+      let listener;
+      window.fod = { onChange: (cb) => { listener = cb; } };
+      const callback = sinon.spy();
+
+      getBidRequestData(reqBidsConfigObj, callback, { params: {} }, {});
+      listener({ fodid: { idprobglobal: 'No value because id.usage is not known yet.' } });
+      expect(callback.called).to.be.false;
+    });
+
+    it('releases the auction at once when the key entitles no 51Did', async function() {
+      let listener;
+      window.fod = { onChange: (cb) => { listener = cb; } };
+      const callback = sinon.spy();
+
+      getBidRequestData(reqBidsConfigObj, callback, { params: {} }, {});
+      listener({ device: fiftyOneDegreesDevice });
+      expect(callback.calledOnce).to.be.true;
+      expect(reqBidsConfigObj.ortb2Fragments.global.device.make).to.equal('Apple');
+    });
+
     it('prefers the on-page integration over a configured resourceKey', async function() {
       const data51 = { device: fiftyOneDegreesDevice };
-      window.fod = { complete: (cb) => cb(data51) };
+      window.fod = { onChange: (cb) => cb(data51) };
       loadExternalScriptStub.resetHistory();
 
       const callback = sinon.spy();
@@ -1250,7 +1302,7 @@ describe('51DegreesRtdProvider', function() {
       }
     });
 
-    it('calls the callback when its own script leaves an fod with neither complete() nor errors', async function() {
+    it('calls the callback when its own script leaves an fod with neither onChange() nor errors', async function() {
       loadExternalScriptStub.callsFake((url, moduleType, moduleName, callback) => {
         window.fod = {};
         callback.success();
@@ -1307,7 +1359,7 @@ describe('51DegreesRtdProvider', function() {
       }
     });
 
-    it('calls the callback when its own script leaves an fod without complete()', async function() {
+    it('calls the callback when its own script leaves an fod without onChange()', async function() {
       // What the cloud serves for a rejected resource key: a script body that
       // defines fod.errors and nothing else.
       loadExternalScriptStub.callsFake((url, moduleType, moduleName, callback) => {
