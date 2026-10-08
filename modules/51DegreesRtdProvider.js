@@ -10,6 +10,7 @@ import {
   prefixLog,
 } from '../src/utils.js';
 import { getDevicePixelRatio } from '../libraries/devicePixelRatio/devicePixelRatio.js';
+import { installTdlControl } from '../libraries/tdlParties/tdlControl.js';
 import { highEntropySUAAccessor } from '../src/fpd/sua.js';
 import { read as read51DidFacts, Usage } from 'fiftyone.pipeline.did/reader'; // eslint-disable-line prebid/validate-imports
 
@@ -805,3 +806,8 @@ export const fiftyOneDegreesSubmodule = {
 };
 
 submodule('realTimeData', fiftyOneDegreesSubmodule);
+
+// A 51Did names the terms it was created under in ext.tdl, so the rule
+// that keeps such data from parties that have not agreed those terms is
+// in force wherever this module is.
+installTdlControl();

@@ -26,6 +26,20 @@ The module forwards the publisher's consent strings to the cloud as evidence whe
 
 When the consent evidence changes mid-session, the module reloads its own script so the new strings reach the cloud, and removes the `fod` entry the 51Degrees script keeps in session storage. That entry is the script's cached cloud response, and it is keyed on nothing but the script's object name, so without removing it the reloaded script would replay the response the previous consent produced and take its values in preference to the fresh ones. The module writes nothing to session storage and removes only that one key, and only on a consent change; where session storage is not permitted the removal is skipped and the cached response stands. This does not apply to the on-page integration mode below, where the module does not own the script.
 
+### Who an identifier is passed to
+
+An eids entry that names terms documents in `ext.tdl` is covered by the [TDL control](tdlControl.md) rule, which this module puts in force for every element of the request that names terms, whichever module added the element.
+
+The entry is passed to a bidder only where the publisher has set `tdl.domain` in the Prebid configuration, the bidder's adapter declares a `tdlDomain`, and each of the two publishes a list under `/.well-known/tdl/` that names the other for every terms document the entry names. Where any of those is missing, the entry is left out of that bidder's request.
+
+```javascript
+pbjs.setConfig({
+  tdl: { domain: 'publisher.example' }
+});
+```
+
+An entry that names no terms, being a 51Did that states none on a page with no `params.tdlUrl`, is not covered by the rule and goes to every bidder.
+
 ### On-page integration
 
 When the page already runs its own 51Degrees integration, the module detects it automatically (the integration's `window.fod` object) and consumes its result instead of loading a second copy of the script. No module params are needed in this mode:

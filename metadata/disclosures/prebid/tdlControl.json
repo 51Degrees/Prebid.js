@@ -1,0 +1,18 @@
+{
+  "disclosures": [
+    {
+      "identifier": "__tdl_parties:*",
+      "type": "web",
+      "domains": [
+        "*"
+      ],
+      "purposes": []
+    }
+  ],
+  "domains": [
+    {
+      "domain": "*",
+      "use": "The lists of parties that have agreed a terms document with each other are kept in localStorage for 24 hours, so that they are not fetched for every auction. The lists hold domain names and nothing about the visitor."
+    }
+  ]
+}

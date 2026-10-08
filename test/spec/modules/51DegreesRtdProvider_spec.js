@@ -18,6 +18,8 @@ import {
   read51Did,
 } from 'modules/51DegreesRtdProvider';
 import { mergeDeep } from '../../../src/utils.js';
+import adapterManager from 'src/adapterManager.js';
+import { installTdlControl } from 'libraries/tdlParties/tdlControl.js';
 import { loadExternalScriptStub } from 'test/mocks/adloaderStub.js';
 
 // The address terms index 1 stands for in the 51Did specification. It is
@@ -1502,6 +1504,18 @@ describe('51DegreesRtdProvider', function() {
   describe('init', function() {
     it('initialises the 51Degrees RTD provider', function() {
       expect(fiftyOneDegreesSubmodule.init()).to.be.true;
+    });
+  });
+
+  describe('the TDL rule', function() {
+    // A 51Did names its terms in ext.tdl, so the module has to bring the
+    // rule that acts on them. Installing it again adds no hook only where
+    // loading the module had installed it already.
+    it('is in force once the module is loaded', function() {
+      const hooks = adapterManager.makeBidRequests.getHooks().length;
+      installTdlControl();
+      expect(adapterManager.makeBidRequests.getHooks().length).to.equal(hooks);
+      expect(hooks).to.be.greaterThan(1);
     });
   });
 });
