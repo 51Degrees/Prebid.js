@@ -47,6 +47,11 @@ describe('tdlParties', function() {
     it('lower cases the party domain', function() {
       expect(partiesUrl(' Publisher.Example ', TERMS)).to.equal(PUBLISHER_LIST);
     });
+
+    it('answers null where the terms document has no address', function() {
+      expect(partiesUrl('publisher.example', 'not an address')).to.equal(null);
+      expect(partiesUrl('publisher.example', undefined)).to.equal(null);
+    });
   });
 
   describe('parseParties', function() {
@@ -116,6 +121,48 @@ describe('tdlParties', function() {
       expect(await parties.agreed('', 'bidder.example', [TERMS])).to.equal(false);
       expect(await parties.agreed('publisher.example', undefined, [TERMS])).to.equal(false);
       expect(web.asked).to.deep.equal([]);
+    });
+  });
+
+  describe('agreedNow', function() {
+    const ask = ['publisher.example', 'bidder.example', [TERMS]];
+
+    it('answers from the lists held, and never fetches', async function() {
+      const web = fakeWeb({ [PUBLISHER_LIST]: 'bidder.example', [BIDDER_LIST]: 'publisher.example' });
+      const parties = tdlPartiesFactory({ get: web.get });
+      expect(parties.agreedNow(...ask)).to.equal(false);
+      expect(parties.known(...ask)).to.equal(false);
+      expect(web.asked).to.deep.equal([]);
+
+      expect(await parties.agreed(...ask)).to.equal(true);
+      expect(parties.agreedNow(...ask)).to.equal(true);
+      expect(parties.known(...ask)).to.equal(true);
+      expect(parties.agreedNow('publisher.example', 'other.example', [TERMS])).to.equal(false);
+      expect(web.asked).to.have.lengthOf(2);
+    });
+
+    it('is false, and known, where a list could not be fetched', async function() {
+      const web = fakeWeb({ [PUBLISHER_LIST]: 'bidder.example' });
+      const parties = tdlPartiesFactory({ get: web.get });
+      await parties.agreed(...ask);
+      expect(parties.agreedNow(...ask)).to.equal(false);
+      expect(parties.known(...ask)).to.equal(true);
+    });
+
+    it('is false where a terms document has no address, with nothing to fetch', async function() {
+      const web = fakeWeb({});
+      const parties = tdlPartiesFactory({ get: web.get });
+      expect(parties.agreedNow('publisher.example', 'bidder.example', ['not an address'])).to.equal(false);
+      expect(parties.known('publisher.example', 'bidder.example', ['not an address'])).to.equal(true);
+      expect(await parties.agreed('publisher.example', 'bidder.example', ['not an address'])).to.equal(false);
+      expect(web.asked).to.deep.equal([]);
+    });
+
+    it('reads a list another page stored', async function() {
+      const storage = fakeStorage();
+      const web = fakeWeb({ [PUBLISHER_LIST]: 'bidder.example', [BIDDER_LIST]: 'publisher.example' });
+      await tdlPartiesFactory({ storage, get: web.get }).agreed(...ask);
+      expect(tdlPartiesFactory({ storage, get: fakeWeb({}).get }).agreedNow(...ask)).to.equal(true);
     });
   });
 

@@ -16,11 +16,10 @@ import {
   storageManager,
   fiftyOneDegreesSubmodule,
   read51Did,
-  getTdlReceivers,
-  tdlParties,
 } from 'modules/51DegreesRtdProvider';
-import adapterManager from 'src/adapterManager.js';
 import { mergeDeep } from '../../../src/utils.js';
+import adapterManager from 'src/adapterManager.js';
+import { installTdlControl } from 'libraries/tdlParties/tdlControl.js';
 import { loadExternalScriptStub } from 'test/mocks/adloaderStub.js';
 
 // The address terms index 1 stands for in the 51Did specification. It is
@@ -1253,9 +1252,11 @@ describe('51DegreesRtdProvider', function() {
       expect(callback.calledOnce).to.be.true;
       expect(reqBidsConfigObj.ortb2Fragments.global.device.ip).to.equal('5.6.7.8');
       expect(reqBidsConfigObj.ortb2Fragments.global.device.geo.country).to.equal('USA');
-      // The entry names terms, so it is kept out of the request every
-      // bidder sees. Who it goes to is tested with the party lists below.
-      expect(reqBidsConfigObj.ortb2Fragments.global.user).to.be.undefined;
+      expect(reqBidsConfigObj.ortb2Fragments.global.user.eids).to.have.lengthOf(1);
+      expect(reqBidsConfigObj.ortb2Fragments.global.user.eids[0].uids)
+        .to.deep.equal([{ id: licId, atype: 1 }, { id: globalId, atype: 1 }]);
+      expect(reqBidsConfigObj.ortb2Fragments.global.user.eids[0].ext.tdl)
+        .to.deep.equal([MODEL_TERMS_URL, 'https://tdl.example/x']);
     });
 
     it('does not overwrite a publisher-set device.ip / device.ipv6', async function() {
@@ -1309,8 +1310,9 @@ describe('51DegreesRtdProvider', function() {
 
       expect(callback.calledOnce).to.be.true;
       expect(loadExternalScriptStub.called).to.be.false;
-      expect(reqBidsConfigObj.ortb2Fragments.global.device.make).to.equal('Apple');
-      expect(reqBidsConfigObj.ortb2Fragments.global.user).to.be.undefined;
+      const eids = reqBidsConfigObj.ortb2Fragments.global.user.eids;
+      expect(eids).to.have.lengthOf(2);
+      expect(eids[1].mm).to.equal(3);
     });
 
     it('adds no user.eids for an on-page 51Did created for non-marketing', async function() {
@@ -1499,160 +1501,21 @@ describe('51DegreesRtdProvider', function() {
     });
   });
 
-  describe('passing 51Did entries to agreed parties', function() {
-    const TDL_URL = 'https://tdl.example/x';
-    let sandbox;
-    let reqBidsConfigObj;
-    let specs;
-    let agreed;
-
-    const run = async (fodid, params = {}) => {
-      window.fod = { complete: (cb) => cb({ device: fiftyOneDegreesDevice, fodid }) };
-      const callback = sinon.spy();
-      getBidRequestData(reqBidsConfigObj, callback, { params }, {});
-      await new Promise(resolve => setTimeout(resolve, 100));
-      return callback;
-    };
-
-    beforeEach(function() {
-      sandbox = sinon.createSandbox();
-      delete window.fod;
-      reqBidsConfigObj = {
-        adUnits: [
-          { code: 'one', bids: [{ bidder: 'agreedBidder' }, { bidder: 'otherBidder' }] },
-          { code: 'two', bids: [{ bidder: 'agreedBidder' }, { bidder: 'silentBidder' }, { bidder: 'aliasBidder' }] },
-        ],
-        ortb2Fragments: { global: { device: {} }, bidder: {} },
-      };
-      specs = {
-        agreedBidder: { code: 'agreedBidder', tdlDomain: 'agreed.example' },
-        otherBidder: { code: 'otherBidder', tdlDomain: 'other.example' },
-        silentBidder: { code: 'silentBidder' },
-      };
-      sandbox.stub(adapterManager, 'getBidAdapter').callsFake((code) => specs[code] && { getSpec: () => specs[code] });
-      sandbox.stub(adapterManager, 'resolveAlias').callsFake((code) => (code === 'aliasBidder' ? 'agreedBidder' : code));
-      // Only agreed.example and the publisher list each other.
-      agreed = sandbox.stub(tdlParties, 'agreed').callsFake((sender, receiver) =>
-        Promise.resolve(receiver === 'agreed.example'));
-    });
-
-    afterEach(function() {
-      sandbox.restore();
-      delete window.fod;
-    });
-
-    it('finds the bidders that declare a tdlDomain, through an alias too', function() {
-      expect(Array.from(getTdlReceivers(reqBidsConfigObj))).to.deep.equal([
-        ['agreedBidder', 'agreed.example'],
-        ['otherBidder', 'other.example'],
-        ['aliasBidder', 'agreed.example'],
-      ]);
-      expect(Array.from(getTdlReceivers({}))).to.deep.equal([]);
-    });
-
-    it('passes an entry that names terms only to the bidders that agree', async function() {
-      const id = make51Did({ terms: 1 });
-      const callback = await run({ idproblic: id }, { tdlUrl: TDL_URL, tdlDomain: 'publisher.example' });
-
-      expect(callback.calledOnce).to.be.true;
-      const entry = {
-        inserter: '51degrees.com',
-        source: '51d.es',
-        mm: 5,
-        uids: [{ id, atype: 1 }],
-        ext: { tdl: [MODEL_TERMS_URL, TDL_URL] },
-      };
-      expect(reqBidsConfigObj.ortb2Fragments.bidder).to.deep.equal({
-        agreedBidder: { user: { eids: [entry] } },
-        aliasBidder: { user: { eids: [entry] } },
-      });
-      expect(reqBidsConfigObj.ortb2Fragments.global.user).to.be.undefined;
-      expect(reqBidsConfigObj.ortb2Fragments.global.device.make).to.equal('Apple');
-    });
-
-    it('asks about the publisher, each declared bidder and the terms the entry names', async function() {
-      await run({ idproblic: make51Did({ terms: 1 }) }, { tdlUrl: TDL_URL, tdlDomain: 'publisher.example' });
-      expect(agreed.args).to.deep.equal([
-        ['publisher.example', 'agreed.example', [MODEL_TERMS_URL, TDL_URL]],
-        ['publisher.example', 'other.example', [MODEL_TERMS_URL, TDL_URL]],
-        ['publisher.example', 'agreed.example', [MODEL_TERMS_URL, TDL_URL]],
-      ]);
-    });
-
-    it('knows the publisher by the page host where tdlDomain is not set', async function() {
-      await run({ idproblic: make51Did({ terms: 1 }) });
-      expect(agreed.firstCall.args[0]).to.equal(window.location.hostname);
-    });
-
-    it('gives each bidder its own copy of the entry', async function() {
-      await run({ idproblic: make51Did({ terms: 1 }) });
-      const bidder = reqBidsConfigObj.ortb2Fragments.bidder;
-      expect(bidder.agreedBidder.user.eids[0]).to.not.equal(bidder.aliasBidder.user.eids[0]);
-      expect(bidder.agreedBidder.user.eids[0].ext.tdl).to.not.equal(bidder.aliasBidder.user.eids[0].ext.tdl);
-    });
-
-    it('keeps what a bidder was already to be sent', async function() {
-      const existing = { source: 'other.example', uids: [{ id: 'abc', atype: 1 }] };
-      reqBidsConfigObj.ortb2Fragments.bidder.agreedBidder = { site: { ext: { x: 1 } }, user: { eids: [existing] } };
-      await run({ idproblic: make51Did({ terms: 1 }) });
-      const fragment = reqBidsConfigObj.ortb2Fragments.bidder.agreedBidder;
-      expect(fragment.site).to.deep.equal({ ext: { x: 1 } });
-      expect(fragment.user.eids).to.have.lengthOf(2);
-      expect(fragment.user.eids[0]).to.deep.equal(existing);
-      expect(fragment.user.eids[1].source).to.equal('51d.es');
-    });
-
-    it('decides each entry by the terms that entry names', async function() {
-      // The probabilistic identifier names the Model Terms and the random
-      // one names none, so with a publisher TDL each entry has its own list.
-      agreed.callsFake((sender, receiver, terms) =>
-        Promise.resolve(receiver === 'agreed.example' && terms.length === 1));
-      const prob = make51Did({ terms: 1 });
-      const rand = make51Did({ type: 'random' });
-      await run({ idproblic: prob, idrandlic: rand }, { tdlUrl: TDL_URL });
-      const eids = reqBidsConfigObj.ortb2Fragments.bidder.agreedBidder.user.eids;
-      expect(eids).to.have.lengthOf(1);
-      expect(eids[0].uids).to.deep.equal([{ id: rand, atype: 1 }]);
-      expect(eids[0].ext.tdl).to.deep.equal([TDL_URL]);
-    });
-
-    it('asks nothing and passes nothing on where no bidder declares a tdlDomain', async function() {
-      specs = { silentBidder: { code: 'silentBidder' } };
-      reqBidsConfigObj.adUnits = [{ code: 'one', bids: [{ bidder: 'silentBidder' }] }];
-      const callback = await run({ idproblic: make51Did({ terms: 1 }) });
-      expect(callback.calledOnce).to.be.true;
-      expect(agreed.called).to.be.false;
-      expect(reqBidsConfigObj.ortb2Fragments.bidder).to.deep.equal({});
-      expect(reqBidsConfigObj.ortb2Fragments.global.user).to.be.undefined;
-    });
-
-    it('leaves an entry that names no terms in the request every bidder sees', async function() {
-      const id = make51Did({ usage: 'standard' });
-      await run({ idproblic: id });
-      expect(agreed.called).to.be.false;
-      expect(reqBidsConfigObj.ortb2Fragments.bidder).to.deep.equal({});
-      expect(reqBidsConfigObj.ortb2Fragments.global.user.eids).to.deep.equal([
-        { inserter: '51degrees.com', source: '51d.es', mm: 5, uids: [{ id, atype: 1 }] },
-      ]);
-    });
-
-    it('still calls back where a check fails', async function() {
-      agreed.callsFake(() => Promise.reject(new Error('boom')));
-      const callback = await run({ idproblic: make51Did({ terms: 1 }) });
-      expect(callback.calledOnce).to.be.true;
-      expect(reqBidsConfigObj.ortb2Fragments.bidder).to.deep.equal({});
-    });
-
-    it('creates the per bidder part of the request where there is none', async function() {
-      delete reqBidsConfigObj.ortb2Fragments.bidder;
-      await run({ idproblic: make51Did({ terms: 1 }) });
-      expect(Object.keys(reqBidsConfigObj.ortb2Fragments.bidder).sort()).to.deep.equal(['agreedBidder', 'aliasBidder']);
-    });
-  });
-
   describe('init', function() {
     it('initialises the 51Degrees RTD provider', function() {
       expect(fiftyOneDegreesSubmodule.init()).to.be.true;
+    });
+  });
+
+  describe('the TDL rule', function() {
+    // A 51Did names its terms in ext.tdl, so the module has to bring the
+    // rule that acts on them. Installing it again adds no hook only where
+    // loading the module had installed it already.
+    it('is in force once the module is loaded', function() {
+      const hooks = adapterManager.makeBidRequests.getHooks().length;
+      installTdlControl();
+      expect(adapterManager.makeBidRequests.getHooks().length).to.equal(hooks);
+      expect(hooks).to.be.greaterThan(1);
     });
   });
 });

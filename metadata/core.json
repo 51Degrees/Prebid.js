@@ -46,6 +46,12 @@
       "componentName": "userId",
       "moduleName": "userId",
       "disclosureURL": "local://prebid/userId-optout.json"
+    },
+    {
+      "componentType": "prebid",
+      "componentName": "tdlControl",
+      "moduleName": "tdlControl",
+      "disclosureURL": "local://prebid/tdlControl.json"
     }
   ]
 }

@@ -137,6 +137,12 @@ export interface BidderSpec<BIDDER extends BidderCode> extends StorageDisclosure
    * @see https://iabeurope.eu/tcf-for-vendors/
    */
   gvlid?: number;
+  /**
+   * The domain the bidder publishes its Terms Document Locator (TDL) party lists on, under `/.well-known/tdl/`,
+   * and is named by in other parties' lists. Data that names terms is passed only to a bidder that declares one.
+   * @see libraries/tdlParties/tdlControl.js
+   */
+  tdlDomain?: string;
   aliases?: readonly (BidderCode | { code: BidderCode, gvlid?: number, skipPbsAliasing?: boolean })[];
   isBidRequestValid(request: BidRequest<BIDDER>): boolean;
   buildRequests(validBidRequests: BidRequest<BIDDER>[], bidderRequest: ClientBidderRequest<BIDDER>): AdapterRequest | AdapterRequest[];

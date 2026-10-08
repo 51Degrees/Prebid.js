@@ -4,15 +4,13 @@ import { submodule } from '../src/hook.js';
 import { getStorageManager } from '../src/storageManager.js';
 import {
   deepAccess,
-  deepClone,
   deepSetValue,
   formatQS,
   mergeDeep,
   prefixLog,
 } from '../src/utils.js';
-import adapterManager from '../src/adapterManager.js';
-import { tdlPartiesFactory } from '../libraries/tdlParties/tdlParties.js';
 import { getDevicePixelRatio } from '../libraries/devicePixelRatio/devicePixelRatio.js';
+import { installTdlControl } from '../libraries/tdlParties/tdlControl.js';
 import { highEntropySUAAccessor } from '../src/fpd/sua.js';
 import { read as read51DidFacts, Usage } from 'fiftyone.pipeline.did/reader'; // eslint-disable-line prebid/validate-imports
 
@@ -537,11 +535,6 @@ export const storageManager = getStorageManager({
   moduleName: MODULE_NAME,
 });
 
-// The party lists fetched so far, kept in local storage where storage is
-// allowed, so that a list is asked for about once a day and not on every
-// auction.
-export const tdlParties = tdlPartiesFactory({ storage: storageManager });
-
 /**
  * Resolves the id.usage value from PMP localStorage.
  * Returns undefined when no valid value is found,
@@ -659,77 +652,14 @@ const dropCachedResponseOnConsentChange = (evidence) => {
 };
 
 /**
- * The bidders in an auction that have declared where their party lists
- * are published. A bidder adapter declares the domain as `tdlDomain` on
- * its spec. A bidder that has declared none is not a party any list can
- * name, so it receives nothing that was created under a terms document.
+ * Converts 51Degrees data and merges it into the ORTB2 fragments.
  *
- * @param {Object} reqBidsConfigObj
- * @returns {Map<string, string>} bidder code to that bidder's domain
+ * @param {Object} data Raw 51Degrees response payload
+ * @param {Object} reqBidsConfigObj Bid request configuration object
+ * @param {string} [tdlUrl] TDL URL passed from module config
+ * @param {Function} callback Called on completion
  */
-export const getTdlReceivers = (reqBidsConfigObj) => {
-  const receivers = new Map();
-  (reqBidsConfigObj.adUnits || []).forEach((adUnit) => (adUnit.bids || []).forEach(({ bidder }) => {
-    if (!bidder || receivers.has(bidder)) {
-      return;
-    }
-    const adapter = adapterManager.getBidAdapter(adapterManager.resolveAlias(bidder));
-    const domain = asString(adapter?.getSpec?.()?.tdlDomain);
-    if (domain) {
-      receivers.set(bidder, domain);
-    }
-  }));
-  return receivers;
-};
-
-/**
- * Adds each eids entry that names terms documents to the bid request of
- * every bidder it may go to, and to no other. An entry may go to a bidder
- * only where the publisher and the bidder each list the other for every
- * terms document the entry names (see libraries/tdlParties).
- *
- * @param {Object[]} entries eids entries that carry ext.tdl
- * @param {Object} reqBidsConfigObj
- * @param {string} sender the publisher's domain
- * @returns {Promise} resolves when every bidder has been decided
- */
-const passToAgreedParties = (entries, reqBidsConfigObj, sender) => {
-  const receivers = getTdlReceivers(reqBidsConfigObj);
-  if (receivers.size === 0) {
-    logMessage('No bidder in the auction declares a tdlDomain, so no 51Did created under terms is passed on');
-    return Promise.resolve();
-  }
-  const fragments = reqBidsConfigObj.ortb2Fragments;
-  fragments.bidder = fragments.bidder || {};
-  const checks = [];
-  receivers.forEach((receiver, bidder) => entries.forEach((entry) => {
-    checks.push(tdlParties.agreed(sender, receiver, entry.ext.tdl).then((agreed) => {
-      if (!agreed) {
-        logMessage(`${sender} and ${receiver} do not both list each other for ${entry.ext.tdl.join(', ')}`);
-        return;
-      }
-      fragments.bidder[bidder] = fragments.bidder[bidder] || {};
-      // A copy for each bidder, so that no two bid requests share an entry.
-      mergeDeep(fragments.bidder[bidder], { user: { eids: [deepClone(entry)] } });
-    }));
-  }));
-  return Promise.all(checks);
-};
-
-/**
- * Enriches the bid request from the 51Degrees data and then calls back.
- * An eids entry that names terms documents is kept out of the part of the
- * request every bidder sees, and goes only to the bidders it may go to.
- *
- * @param {Object} data Response from 51Degrees API
- * @param {Object} reqBidsConfigObj
- * @param {Object} options
- * @param {string} [options.tdlUrl] TDL URL passed from module config
- * @param {string} options.tdlDomain the publisher's domain
- * @param {function} callback
- */
-const enrichFromData = (data, reqBidsConfigObj, { tdlUrl, tdlDomain }, callback) => {
-  let decided = Promise.resolve();
+const enrichFromData = (data, reqBidsConfigObj, tdlUrl, callback) => {
   try {
     logMessage('51Degrees raw data: ', data);
     const global = reqBidsConfigObj.ortb2Fragments.global;
@@ -740,26 +670,12 @@ const enrichFromData = (data, reqBidsConfigObj, { tdlUrl, tdlDomain }, callback)
       if (deepAccess(global, 'device.ip')) delete enrichment.device.ip;
       if (deepAccess(global, 'device.ipv6')) delete enrichment.device.ipv6;
     }
-    const eids = deepAccess(enrichment, 'user.eids') || [];
-    const underTerms = eids.filter((entry) => deepAccess(entry, 'ext.tdl.length') > 0);
-    if (underTerms.length > 0) {
-      const open = eids.filter((entry) => !underTerms.includes(entry));
-      if (open.length > 0) {
-        enrichment.user.eids = open;
-      } else {
-        delete enrichment.user;
-      }
-      decided = passToAgreedParties(underTerms, reqBidsConfigObj, tdlDomain);
-    }
     mergeDeep(global, enrichment);
     logMessage('reqBidsConfigObj: ', reqBidsConfigObj);
   } catch (e) {
     logError(e);
   }
-  decided.then(callback, (e) => {
-    logError(e);
-    callback();
-  });
+  callback();
 };
 
 /**
@@ -778,9 +694,6 @@ export const getBidRequestData = (reqBidsConfigObj, callback, moduleConfig, user
   };
   try {
     const tdlUrl = deepAccess(moduleConfig, 'params.tdlUrl');
-    // The party the publisher is known as in other parties' lists, and
-    // the domain its own lists are published on.
-    const tdlDomain = asString(deepAccess(moduleConfig, 'params.tdlDomain')) || window.location.hostname;
     const idUsage = resolveIdUsage(moduleConfig);
     const tcString = resolveTcString(userConsent);
     const gpp = resolveGpp(userConsent);
@@ -790,7 +703,7 @@ export const getBidRequestData = (reqBidsConfigObj, callback, moduleConfig, user
 
     const onData = (data) => {
       if (!callbackCalled) {
-        enrichFromData(data, reqBidsConfigObj, { tdlUrl, tdlDomain }, callbackOnce);
+        enrichFromData(data, reqBidsConfigObj, tdlUrl, callbackOnce);
       }
     };
 
@@ -893,3 +806,8 @@ export const fiftyOneDegreesSubmodule = {
 };
 
 submodule('realTimeData', fiftyOneDegreesSubmodule);
+
+// A 51Did names the terms it was created under in ext.tdl, so the rule
+// that keeps such data from parties that have not agreed those terms is
+// in force wherever this module is.
+installTdlControl();

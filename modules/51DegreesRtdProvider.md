@@ -28,20 +28,17 @@ When the consent evidence changes mid-session, the module reloads its own script
 
 ### Who an identifier is passed to
 
-An eids entry that names terms documents in `ext.tdl` is passed only to the bidders that have agreed those terms with the publisher, and is kept out of the part of the request every bidder receives.
+An eids entry that names terms documents in `ext.tdl` is covered by the [TDL control](tdlControl.md) rule, which this module puts in force for every element of the request that names terms, whichever module added the element.
 
-Each party publishes, on its own domain, the domains of the parties it has a terms document with. The list for a terms document is found by putting the document's address, without its scheme, after `/.well-known/tdl/`. The Model Terms for Marketing at `https://m4ow.uk/mtm/2.txt` therefore have their list for `publisher.example` at `https://publisher.example/.well-known/tdl/m4ow.uk/mtm/2.txt`. The list is a text file with one domain to a line, and anything after a `#` on a line is a comment.
+The entry is passed to a bidder only where the publisher has set `tdl.domain` in the Prebid configuration, the bidder's adapter declares a `tdlDomain`, and each of the two publishes a list under `/.well-known/tdl/` that names the other for every terms document the entry names. Where any of those is missing, the entry is left out of that bidder's request.
 
-The module passes an entry to a bidder only where both of these are true for every terms document the entry names:
+```javascript
+pbjs.setConfig({
+  tdl: { domain: 'publisher.example' }
+});
+```
 
-1. the publisher's list names the bidder's domain,
-2. the bidder's list names the publisher's domain.
-
-The publisher's domain is `params.tdlDomain`, or the host of the page where that is not set. A bidder's domain is the `tdlDomain` its adapter declares on its spec, and a bidder whose adapter declares none receives no entry that names terms. A list that cannot be fetched counts as naming nobody.
-
-Lists are fetched once and kept for 24 hours, in local storage where Prebid's storage rules allow it and in memory otherwise, and a list that could not be fetched is not asked for again for an hour. On a first visit the lists are fetched during the auction delay, so an entry is passed in that auction only where the answers arrive in time. A list on another domain has to be served with an `Access-Control-Allow-Origin` header that lets the page read it.
-
-An entry that names no terms, being a 51Did that states none on a page with no `params.tdlUrl`, is not covered by this rule and goes in the request every bidder receives.
+An entry that names no terms, being a 51Did that states none on a page with no `params.tdlUrl`, is not covered by the rule and goes to every bidder.
 
 ### On-page integration
 
@@ -193,7 +190,6 @@ pbjs.setConfig({
 | params.resourceKey    | String  | Your 51Degrees Cloud Resource Key                                                                                                          |                    |
 | params.onPremiseJSUrl | String  | Direct URL to your self-hosted on-premise JS file (e.g. https://localhost/51Degrees.core.js)                                              |                    |
 | params.tdlUrl         | String  | URL of your Terms Document Locator (TDL): a machine-readable document declaring the data usage terms under which the identifier is shared, per the [data-labels proposal](https://github.com/jwrosewell/data-labels/tree/main) and its [OpenRTB extension](https://github.com/jwrosewell/data-labels/blob/main/OpenRTB.md). The URL is placed in the `ext.tdl` array of each `51d.es` eids entry, after the terms the entry's identifiers were created under. Omit if you do not publish a TDL; the module will log a warning and name only the terms each identifier carries. |                    |
-| params.tdlDomain      | String  | The domain the publisher is known by in other parties' TDL party lists, and on which its own lists are published under `/.well-known/tdl/`. Defaults to the host of the page. See "Who an identifier is passed to". |                    |
 
 > Note: if you use a third-party Prebid.js wrapper, there might be a chance that the UI will force you to input both `resourceKey` and `onPremiseJSUrl`. In this case, you can set a redundant parameter to a string equal to "0", which will be ignored by the module.
 
