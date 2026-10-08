@@ -548,14 +548,47 @@ export const resolveGpp = (userConsent) => {
  */
 export const getPageFod = () => {
   const fod = window.fod;
-  return (fod && typeof fod.complete === 'function') ? fod : null;
+  return (fod && typeof fod.onChange === 'function') ? fod : null;
 };
+
+// What a 51Did looks like: base64, standard or URL safe, and long. The script's
+// property getters return a sentence explaining why when a value is null, so
+// "is a string" is not enough to know an identifier is there.
+const IDENTIFIER_SHAPE = /^[A-Za-z0-9+/_=-]{40,}$/;
+
+/**
+ * Whether a 51Degrees response carries a 51Did in any of the properties the
+ * eids mapping reads.
+ *
+ * @param {Object} data Raw 51Degrees response payload
+ * @returns {boolean}
+ */
+export const holdsIdentifier = (data) => {
+  const fodid = data && data.fodid;
+  return !!fodid && Object.keys(FODID_EID).some((property) =>
+    typeof fodid[property] === 'string' && IDENTIFIER_SHAPE.test(fodid[property]));
+};
+
+/**
+ * Whether a 51Did is still to come in this response.
+ *
+ * The resource key decides whether a 51Did can be created at all, and a key
+ * that entitles one answers with a `fodid` section even before one exists. A
+ * 51Did only exists once the visitor's preference or a TCF string is known,
+ * and the script refreshes itself when that happens, so the section is there
+ * but empty until then.
+ *
+ * @param {Object} data Raw 51Degrees response payload
+ * @returns {boolean}
+ */
+export const awaitsIdentifier = (data) =>
+  !!(data && data.fodid && typeof data.fodid === 'object') && !holdsIdentifier(data);
 
 /**
  * Returns errors reported by an on-page 51Degrees script, if any.
  *
  * A failed script request still assigns window.fod, but with only an `errors`
- * array and no complete() method, so getPageFod() correctly reports no usable
+ * array and no onChange() method, so getPageFod() correctly reports no usable
  * integration. Surfacing these errors keeps that failure attributable: without
  * them the caller falls through to the configuration check and reports a
  * missing resourceKey, which is not the actual problem.
@@ -616,9 +649,8 @@ const dropCachedResponseOnConsentChange = (evidence) => {
  * @param {Object} data Raw 51Degrees response payload
  * @param {Object} reqBidsConfigObj Bid request configuration object
  * @param {string} [tdlUrl] TDL URL passed from module config
- * @param {Function} callback Called on completion
  */
-const enrichFromData = (data, reqBidsConfigObj, tdlUrl, callback) => {
+const enrichFromData = (data, reqBidsConfigObj, tdlUrl) => {
   try {
     logMessage('51Degrees raw data: ', data);
     const global = reqBidsConfigObj.ortb2Fragments.global;
@@ -634,7 +666,46 @@ const enrichFromData = (data, reqBidsConfigObj, tdlUrl, callback) => {
   } catch (e) {
     logError(e);
   }
-  callback();
+};
+
+/**
+ * Follows a 51Degrees script's data as it changes, and lets the auction go
+ * once the data is final.
+ *
+ * The script answers once as soon as it can, then again each time it
+ * refreshes, which it does when the visitor's preference or a TCF string
+ * becomes known, and only that refreshed answer carries the 51Did. So the
+ * device and location are merged as soon as they arrive, and the auction is
+ * released once a 51Did is there, or at once when the key entitles none.
+ * If a 51Did never comes, the auctionDelay releases the auction with the
+ * device and location already merged.
+ *
+ * Each answer is merged only while the auction is still waiting, because an
+ * answer that arrives after the auction has gone cannot reach it.
+ *
+ * @param {Object} fod The script's fod object
+ * @param {Object} reqBidsConfigObj Bid request configuration object
+ * @param {string} [tdlUrl] TDL URL passed from module config
+ * @param {Function} isDone Whether the auction has already been released
+ * @param {Function} done Releases the auction
+ */
+const followFod = (fod, reqBidsConfigObj, tdlUrl, isDone, done) => {
+  // One parameter, because the script only answers a listener at once, when
+  // it already has data, if the listener takes exactly one argument.
+  fod.onChange((data) => {
+    if (isDone()) {
+      return;
+    }
+    const waiting = awaitsIdentifier(data);
+    // A response still waiting for its 51Did adds no eids, because its fodid
+    // values are null until the 51Did exists.
+    enrichFromData(data, reqBidsConfigObj, tdlUrl);
+    if (waiting) {
+      logMessage('51Degrees data merged; waiting for the 51Did');
+      return;
+    }
+    done();
+  });
 };
 
 /**
@@ -660,16 +731,12 @@ export const getBidRequestData = (reqBidsConfigObj, callback, moduleConfig, user
     logMessage('TCF consent string present: ', !!tcString);
     logMessage('GPP string present: ', !!gpp);
 
-    const onData = (data) => {
-      if (!callbackCalled) {
-        enrichFromData(data, reqBidsConfigObj, tdlUrl, callbackOnce);
-      }
-    };
+    const isDone = () => callbackCalled;
 
     const pageFod = getPageFod();
     if (pageFod && pageFod !== ownFod) {
       logMessage('Using on-page 51Degrees integration (window.fod)');
-      pageFod.complete(onData);
+      followFod(pageFod, reqBidsConfigObj, tdlUrl, isDone, callbackOnce);
       return;
     }
 
@@ -709,8 +776,8 @@ export const getBidRequestData = (reqBidsConfigObj, callback, moduleConfig, user
           const fod = /** @type {Object} */ (window.fod);
           // A rejected request (unknown resource key, expired licence) still
           // serves a script body, but one that defines only fod.errors. Calling
-          // complete() on it throws inside the loader, which swallows the error.
-          if (!fod || typeof fod.complete !== 'function') {
+          // onChange() on it throws inside the loader, which swallows the error.
+          if (!fod || typeof fod.onChange !== 'function') {
             const errors = getPageFodErrors();
             logError('Injected 51Degrees script did not provide a usable fod object' +
               (errors ? ': ' + errors.join('; ') : ''));
@@ -718,8 +785,7 @@ export const getBidRequestData = (reqBidsConfigObj, callback, moduleConfig, user
             return;
           }
           ownFod = fod;
-          // Convert and merge device data in the callback
-          fod.complete(onData);
+          followFod(fod, reqBidsConfigObj, tdlUrl, isDone, callbackOnce);
         },
         // Blocked, offline, or a non-200 response. Only the object form of the
         // callback gets told about this; a bare function is called on success only.
