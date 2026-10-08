@@ -11,20 +11,39 @@ import {
 } from '../src/utils.js';
 import { getDevicePixelRatio } from '../libraries/devicePixelRatio/devicePixelRatio.js';
 import { highEntropySUAAccessor } from '../src/fpd/sua.js';
+import { read as read51DidFacts, Usage } from 'fiftyone.pipeline.did/reader'; // eslint-disable-line prebid/validate-imports
 
 const MODULE_NAME = '51Degrees';
 export const LOG_PREFIX = `[${MODULE_NAME} RTD Submodule]:`;
 const { logMessage, logWarn, logError } = prefixLog(LOG_PREFIX);
 
-// The Model Terms for Marketing, published by the Movement for an Open
-// Web, which every party sending or receiving a 51Did is bound by. They
-// are the legal basis a receiver acts under, so they are named on every
-// 51d.es eids entry rather than left for the receiver to find. The
-// document is versioned and cannot be changed once published, which is
-// what the Terms Document Locator specification asks of a terms
-// document. A publisher's own TDL is listed after this one, being the
-// more specific statement, and never in place of it.
-export const MODEL_TERMS_URL = 'https://m4ow.uk/mtm/2.txt';
+/**
+ * Whether a 51Did may go in a bid request, and the address of the terms
+ * document it was created under, which is the legal basis a receiver acts
+ * under. The identifier carries both answers itself, inside its signature,
+ * and the 51Did package reads them. That package holds the table of terms
+ * documents from the 51Did specification, so this module keeps no list of
+ * its own and learns of a new document from a new release of the package.
+ * Each address names an exact version of a document that cannot be changed
+ * once published, which is what the Terms Document Locator specification
+ * asks of a terms document.
+ *
+ * An identifier created for non-marketing must never be passed to a demand
+ * source, which is where everything in a bid request goes, so it may not
+ * be sent. Nor may a value the package cannot read, because nothing shows
+ * it was created for marketing.
+ *
+ * @param {string} value a 51Did as the cloud returned it
+ * @returns {{send: boolean, terms: (string|undefined)}} `terms` is
+ *          undefined where the identifier states no terms
+ */
+export const read51Did = (value) => {
+  const facts = read51DidFacts(value);
+  return {
+    send: facts.ok && facts.usage !== Usage.NON_MARKETING,
+    terms: facts.terms || undefined,
+  };
+};
 
 // ORTB device types
 const ORTB_DEVICE_TYPE = {
@@ -426,9 +445,13 @@ const FODID_EID = {
  * atype 1, and Hashed Email is mm 3 (authenticated) atype 3. The type
  * comes from which type-specific property the cloud populated (see
  * FODID_EID). A type's license and global values share its entry,
- * license value first. ext.tdl names the Model Terms for Marketing on
- * every entry, followed by the publisher's own TDL when one is
- * configured.
+ * license value first, where they were created under the same terms.
+ * ext.tdl names the terms document the entry's identifiers were created
+ * under (see read51Did), followed by the publisher's own TDL when one is
+ * configured, being the more specific statement. An entry whose
+ * identifiers state no terms names the publisher's TDL alone, and carries
+ * no ext where there is none. An identifier that may not be sent (see
+ * read51Did) is left out.
  *
  * @param {Object} fodid 51Degrees fodid object
  * @param {string} [fodid.idproblic] License-tier Probabilistic 51DiD
@@ -446,36 +469,53 @@ export const convert51DegreesFoDiDToOrtb2 = (fodid, tdlUrl) => {
     return {};
   }
 
-  // One eids entry per match method (mm is an eid-level field). Iterating
-  // FODID_EID keeps a stable order (Probabilistic, then Random, then
-  // Hashed Email) and license value before global within each type.
-  const byMm = new Map();
+  // One eids entry per match method (mm is an eid-level field) and per
+  // terms document, so that ext.tdl is true of every identifier in its
+  // entry. Iterating FODID_EID keeps a stable order (Probabilistic, then
+  // Random, then Hashed Email) and license value before global within
+  // each type.
+  const entries = new Map();
+  let leftOut = 0;
   Object.keys(FODID_EID).forEach((prop) => {
     const value = fodid[prop];
     if (!value || typeof value !== 'string') {
       return;
     }
-    const { mm, atype } = FODID_EID[prop];
-    if (!byMm.has(mm)) {
-      byMm.set(mm, []);
+    const { send, terms } = read51Did(value);
+    if (!send) {
+      leftOut++;
+      return;
     }
-    byMm.get(mm).push({ id: value, atype });
+    const { mm, atype } = FODID_EID[prop];
+    const key = `${mm} ${terms || ''}`;
+    if (!entries.has(key)) {
+      entries.set(key, { mm, terms, uids: [] });
+    }
+    entries.get(key).uids.push({ id: value, atype });
   });
 
-  if (byMm.size === 0) {
+  if (leftOut > 0) {
+    logMessage(`${leftOut} 51Did value(s) were not created for marketing, or could not be read, and were left out of user.eids`);
+  }
+
+  if (entries.size === 0) {
     return {};
   }
 
   const eids = [];
-  byMm.forEach((uids, mm) => {
+  entries.forEach(({ mm, terms, uids }) => {
+    const entry = { inserter: '51degrees.com', source: '51d.es', mm, uids };
     // A fresh array per entry, so a consumer that edits one entry's
     // terms does not edit every other entry's at the same time.
-    const tdl = tdlUrl ? [MODEL_TERMS_URL, tdlUrl] : [MODEL_TERMS_URL];
-    eids.push({ inserter: '51degrees.com', source: '51d.es', mm, uids, ext: { tdl } });
+    const tdl = [terms, tdlUrl].filter(Boolean);
+    if (tdl.length > 0) {
+      entry.ext = { tdl };
+    }
+    eids.push(entry);
   });
 
   if (!tdlUrl) {
-    logWarn('tdlUrl is not configured; eids entries name the Model Terms alone in ext.tdl');
+    logWarn('tdlUrl is not configured; eids entries name only the terms each 51Did was created under');
   }
 
   return { user: { eids } };
