@@ -1206,6 +1206,38 @@ describe('51DegreesRtdProvider', function() {
       expect(reqBidsConfigObj.ortb2Fragments.global.user.eids).to.have.lengthOf(1);
     });
 
+    it('waits for a 51Did that does not come in one auction only', async function() {
+      let listener;
+      window.fod = { onChange: (cb) => { listener = cb; } };
+      const pending = { device: fiftyOneDegreesDevice, fodid: { idprobglobal: null } };
+
+      const callback1 = sinon.spy();
+      getBidRequestData(reqBidsConfigObj, callback1, { params: {} }, {}, 20);
+      listener(pending);
+      expect(callback1.called, 'released before the auctionDelay').to.be.false;
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(callback1.calledOnce).to.be.true;
+
+      // The next auction goes as soon as it has the device.
+      resetReqBidsConfigObj();
+      const callback2 = sinon.spy();
+      getBidRequestData(reqBidsConfigObj, callback2, { params: {} }, {}, 20);
+      listener(pending);
+      expect(callback2.calledOnce).to.be.true;
+      expect(reqBidsConfigObj.ortb2Fragments.global.device.make).to.equal('Apple');
+
+      // Once a 51Did has come, auctions wait for one again.
+      resetReqBidsConfigObj();
+      getBidRequestData(reqBidsConfigObj, sinon.spy(), { params: {} }, {}, 20);
+      listener({ device: fiftyOneDegreesDevice, fodid: { idprobglobal: ID_GLOBAL_UID } });
+      listener(pending);
+      resetReqBidsConfigObj();
+      const callback4 = sinon.spy();
+      getBidRequestData(reqBidsConfigObj, callback4, { params: {} }, {}, 20);
+      listener(pending);
+      expect(callback4.called).to.be.false;
+    });
+
     it('does not take a null reason sentence for a 51Did', async function() {
       let listener;
       window.fod = { onChange: (cb) => { listener = cb; } };

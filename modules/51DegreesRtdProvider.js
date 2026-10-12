@@ -668,6 +668,12 @@ const enrichFromData = (data, reqBidsConfigObj, tdlUrl) => {
   }
 };
 
+// Scripts whose 51Did did not arrive within an auction's delay. The visitor
+// may never answer the consent prompt, so a later auction on the same script
+// goes as soon as it has data rather than paying the full delay again; a 51Did
+// that arrives later still reaches the auctions after it.
+const overdueFods = new WeakSet();
+
 /**
  * Follows a 51Degrees script's data as it changes, and lets the auction go
  * once the data is final.
@@ -678,7 +684,8 @@ const enrichFromData = (data, reqBidsConfigObj, tdlUrl) => {
  * device and location are merged as soon as they arrive, and the auction is
  * released once a 51Did is there, or at once when the key entitles none.
  * If a 51Did never comes, the auctionDelay releases the auction with the
- * device and location already merged.
+ * device and location already merged, and later auctions on the same script
+ * stop waiting for it.
  *
  * Each answer is merged only while the auction is still waiting, because an
  * answer that arrives after the auction has gone cannot reach it.
@@ -700,9 +707,12 @@ const followFod = (fod, reqBidsConfigObj, tdlUrl, isDone, done) => {
     // A response still waiting for its 51Did adds no eids, because its fodid
     // values are null until the 51Did exists.
     enrichFromData(data, reqBidsConfigObj, tdlUrl);
-    if (waiting) {
+    if (waiting && !overdueFods.has(fod)) {
       logMessage('51Degrees data merged; waiting for the 51Did');
       return;
+    }
+    if (!waiting) {
+      overdueFods.delete(fod);
     }
     done();
   });
@@ -713,8 +723,9 @@ const followFod = (fod, reqBidsConfigObj, tdlUrl, isDone, done) => {
  * @param {Function} callback Called on completion
  * @param {Object} moduleConfig Configuration for 1plusX RTD module
  * @param {Object} userConsent
+ * @param {number} [timeout] The auctionDelay the auction waits for at most
  */
-export const getBidRequestData = (reqBidsConfigObj, callback, moduleConfig, userConsent) => {
+export const getBidRequestData = (reqBidsConfigObj, callback, moduleConfig, userConsent, timeout) => {
   let callbackCalled = false;
   const callbackOnce = () => {
     if (!callbackCalled) {
@@ -733,10 +744,25 @@ export const getBidRequestData = (reqBidsConfigObj, callback, moduleConfig, user
 
     const isDone = () => callbackCalled;
 
+    let followed = null;
+    const follow = (fod) => {
+      followed = fod;
+      followFod(fod, reqBidsConfigObj, tdlUrl, isDone, callbackOnce);
+    };
+    if (timeout > 0) {
+      setTimeout(() => {
+        if (!callbackCalled && followed) {
+          logMessage('No 51Did within the auctionDelay; later auctions will not wait for one');
+          overdueFods.add(followed);
+        }
+        callbackOnce();
+      }, timeout);
+    }
+
     const pageFod = getPageFod();
     if (pageFod && pageFod !== ownFod) {
       logMessage('Using on-page 51Degrees integration (window.fod)');
-      followFod(pageFod, reqBidsConfigObj, tdlUrl, isDone, callbackOnce);
+      follow(pageFod);
       return;
     }
 
@@ -785,7 +811,7 @@ export const getBidRequestData = (reqBidsConfigObj, callback, moduleConfig, user
             return;
           }
           ownFod = fod;
-          followFod(fod, reqBidsConfigObj, tdlUrl, isDone, callbackOnce);
+          follow(fod);
         },
         // Blocked, offline, or a non-200 response. Only the object form of the
         // callback gets told about this; a bare function is called on success only.
