@@ -548,14 +548,47 @@ export const resolveGpp = (userConsent) => {
  */
 export const getPageFod = () => {
   const fod = window.fod;
-  return (fod && typeof fod.complete === 'function') ? fod : null;
+  return (fod && typeof fod.onChange === 'function') ? fod : null;
 };
+
+// What a 51Did looks like: base64, standard or URL safe, and long. The script's
+// property getters return a sentence explaining why when a value is null, so
+// "is a string" is not enough to know an identifier is there.
+const IDENTIFIER_SHAPE = /^[A-Za-z0-9+/_=-]{40,}$/;
+
+/**
+ * Whether a 51Degrees response carries a 51Did in any of the properties the
+ * eids mapping reads.
+ *
+ * @param {Object} data Raw 51Degrees response payload
+ * @returns {boolean}
+ */
+export const holdsIdentifier = (data) => {
+  const fodid = data && data.fodid;
+  return !!fodid && Object.keys(FODID_EID).some((property) =>
+    typeof fodid[property] === 'string' && IDENTIFIER_SHAPE.test(fodid[property]));
+};
+
+/**
+ * Whether a 51Did is still to come in this response.
+ *
+ * The resource key decides whether a 51Did can be created at all, and a key
+ * that entitles one answers with a `fodid` section even before one exists. A
+ * 51Did only exists once the visitor's preference or a TCF string is known,
+ * and the script refreshes itself when that happens, so the section is there
+ * but empty until then.
+ *
+ * @param {Object} data Raw 51Degrees response payload
+ * @returns {boolean}
+ */
+export const awaitsIdentifier = (data) =>
+  !!(data && data.fodid && typeof data.fodid === 'object') && !holdsIdentifier(data);
 
 /**
  * Returns errors reported by an on-page 51Degrees script, if any.
  *
  * A failed script request still assigns window.fod, but with only an `errors`
- * array and no complete() method, so getPageFod() correctly reports no usable
+ * array and no onChange() method, so getPageFod() correctly reports no usable
  * integration. Surfacing these errors keeps that failure attributable: without
  * them the caller falls through to the configuration check and reports a
  * missing resourceKey, which is not the actual problem.
@@ -616,9 +649,8 @@ const dropCachedResponseOnConsentChange = (evidence) => {
  * @param {Object} data Raw 51Degrees response payload
  * @param {Object} reqBidsConfigObj Bid request configuration object
  * @param {string} [tdlUrl] TDL URL passed from module config
- * @param {Function} callback Called on completion
  */
-const enrichFromData = (data, reqBidsConfigObj, tdlUrl, callback) => {
+const enrichFromData = (data, reqBidsConfigObj, tdlUrl) => {
   try {
     logMessage('51Degrees raw data: ', data);
     const global = reqBidsConfigObj.ortb2Fragments.global;
@@ -634,20 +666,105 @@ const enrichFromData = (data, reqBidsConfigObj, tdlUrl, callback) => {
   } catch (e) {
     logError(e);
   }
-  callback();
 };
+
+// Scripts whose 51Did did not arrive within an auction's delay. The visitor
+// may never answer the consent prompt, so a later auction on the same script
+// goes as soon as it has data rather than paying the full delay again; a 51Did
+// that arrives later still reaches the auctions after it.
+const overdueFods = new WeakSet();
+
+// One listener per script, shared by the auctions waiting on it, because the
+// script cannot remove a listener and one per auction would pile up for the
+// life of the page, each holding its auction's request.
+const followers = new WeakMap();
+
+/**
+ * Calls onData with a script's data now, if it has any, and each time it
+ * changes, until the returned function is called.
+ *
+ * @param {Object} fod The script's fod object
+ * @param {Function} onData Called with each answer
+ * @returns {Function} Stops calling onData
+ */
+const subscribe = (fod, onData) => {
+  let follower = followers.get(fod);
+  if (follower) {
+    follower.listeners.add(onData);
+    if (follower.data !== undefined) {
+      onData(follower.data);
+    }
+  } else {
+    follower = { data: undefined, listeners: new Set([onData]) };
+    followers.set(fod, follower);
+    // One parameter, because the script only answers a listener at once, when
+    // it already has data, if the listener takes exactly one argument.
+    fod.onChange((data) => {
+      follower.data = data;
+      // Here rather than in an auction's listener, because a 51Did may arrive
+      // while no auction is following the script.
+      if (!awaitsIdentifier(data)) {
+        overdueFods.delete(fod);
+      }
+      follower.listeners.forEach((listener) => listener(data));
+    });
+  }
+  return () => follower.listeners.delete(onData);
+};
+
+/**
+ * Follows a 51Degrees script's data as it changes, and lets the auction go
+ * once the data is final.
+ *
+ * The script answers once as soon as it can, then again each time it
+ * refreshes, which it does when the visitor's preference or a TCF string
+ * becomes known, and only that refreshed answer carries the 51Did. So the
+ * device and location are merged as soon as they arrive, and the auction is
+ * released once a 51Did is there, or at once when the key entitles none.
+ * If a 51Did never comes, the auctionDelay releases the auction with the
+ * device and location already merged, and later auctions on the same script
+ * stop waiting for it.
+ *
+ * Each answer is merged only while the auction is still waiting, because an
+ * answer that arrives after the auction has gone cannot reach it.
+ *
+ * @param {Object} fod The script's fod object
+ * @param {Object} reqBidsConfigObj Bid request configuration object
+ * @param {string} [tdlUrl] TDL URL passed from module config
+ * @param {Function} isDone Whether the auction has already been released
+ * @param {Function} done Releases the auction
+ * @returns {Function} Stops following the script
+ */
+const followFod = (fod, reqBidsConfigObj, tdlUrl, isDone, done) =>
+  subscribe(fod, (data) => {
+    if (isDone()) {
+      return;
+    }
+    const waiting = awaitsIdentifier(data);
+    // A response still waiting for its 51Did adds no eids, because its fodid
+    // values are null until the 51Did exists.
+    enrichFromData(data, reqBidsConfigObj, tdlUrl);
+    if (waiting && !overdueFods.has(fod)) {
+      logMessage('51Degrees data merged; waiting for the 51Did');
+      return;
+    }
+    done();
+  });
 
 /**
  * @param {Object} reqBidsConfigObj Bid request configuration object
  * @param {Function} callback Called on completion
  * @param {Object} moduleConfig Configuration for 1plusX RTD module
  * @param {Object} userConsent
+ * @param {number} [timeout] The auctionDelay the auction waits for at most
  */
-export const getBidRequestData = (reqBidsConfigObj, callback, moduleConfig, userConsent) => {
+export const getBidRequestData = (reqBidsConfigObj, callback, moduleConfig, userConsent, timeout) => {
   let callbackCalled = false;
+  let unfollow = () => {};
   const callbackOnce = () => {
     if (!callbackCalled) {
       callbackCalled = true;
+      unfollow();
       callback();
     }
   };
@@ -660,16 +777,31 @@ export const getBidRequestData = (reqBidsConfigObj, callback, moduleConfig, user
     logMessage('TCF consent string present: ', !!tcString);
     logMessage('GPP string present: ', !!gpp);
 
-    const onData = (data) => {
-      if (!callbackCalled) {
-        enrichFromData(data, reqBidsConfigObj, tdlUrl, callbackOnce);
+    const isDone = () => callbackCalled;
+
+    let followed = null;
+    const follow = (fod) => {
+      followed = fod;
+      unfollow = followFod(fod, reqBidsConfigObj, tdlUrl, isDone, callbackOnce);
+      // The script may have answered, and the auction gone, before followFod returned.
+      if (callbackCalled) {
+        unfollow();
       }
     };
+    if (timeout > 0) {
+      setTimeout(() => {
+        if (!callbackCalled && followed) {
+          logMessage('No 51Did within the auctionDelay; later auctions will not wait for one');
+          overdueFods.add(followed);
+        }
+        callbackOnce();
+      }, timeout);
+    }
 
     const pageFod = getPageFod();
     if (pageFod && pageFod !== ownFod) {
       logMessage('Using on-page 51Degrees integration (window.fod)');
-      pageFod.complete(onData);
+      follow(pageFod);
       return;
     }
 
@@ -709,8 +841,8 @@ export const getBidRequestData = (reqBidsConfigObj, callback, moduleConfig, user
           const fod = /** @type {Object} */ (window.fod);
           // A rejected request (unknown resource key, expired licence) still
           // serves a script body, but one that defines only fod.errors. Calling
-          // complete() on it throws inside the loader, which swallows the error.
-          if (!fod || typeof fod.complete !== 'function') {
+          // onChange() on it throws inside the loader, which swallows the error.
+          if (!fod || typeof fod.onChange !== 'function') {
             const errors = getPageFodErrors();
             logError('Injected 51Degrees script did not provide a usable fod object' +
               (errors ? ': ' + errors.join('; ') : ''));
@@ -718,8 +850,7 @@ export const getBidRequestData = (reqBidsConfigObj, callback, moduleConfig, user
             return;
           }
           ownFod = fod;
-          // Convert and merge device data in the callback
-          fod.complete(onData);
+          follow(fod);
         },
         // Blocked, offline, or a non-200 response. Only the object form of the
         // callback gets told about this; a bare function is called on success only.
