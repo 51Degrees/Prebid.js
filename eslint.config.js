@@ -26,7 +26,8 @@ function sourcePattern(name) {
 const allowedImports = {
   modules: [
     'crypto-js',
-    'live-connect' // Maintained by LiveIntent : https://github.com/liveintent-berlin/live-connect/
+    'live-connect', // Maintained by LiveIntent : https://github.com/liveintent-berlin/live-connect/
+    'fiftyone.pipeline.did/reader' // Maintained by 51Degrees : https://github.com/51Degrees/pipeline-node
   ],
   src: [
     'fun-hooks/no-eval',
