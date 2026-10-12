@@ -11,7 +11,7 @@ import {
 } from '../src/utils.js';
 import { getDevicePixelRatio } from '../libraries/devicePixelRatio/devicePixelRatio.js';
 import { highEntropySUAAccessor } from '../src/fpd/sua.js';
-import { read as read51DidFacts, Usage } from 'fiftyone.pipeline.did/reader'; // eslint-disable-line prebid/validate-imports
+import { read as read51DidFacts, Usage } from 'fiftyone.pipeline.did/reader';
 
 const MODULE_NAME = '51Degrees';
 export const LOG_PREFIX = `[${MODULE_NAME} RTD Submodule]:`;
