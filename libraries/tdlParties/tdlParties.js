@@ -1,0 +1,220 @@
+import { fetch } from '../../src/ajax.js';
+
+/**
+ * Party lists for terms documents named by a Terms Document Locator (TDL).
+ *
+ * A party that has accepted a terms document publishes the domains of the
+ * other parties it has those terms with, in a text file on its own domain.
+ * The file is found from the address of the terms document, by putting the
+ * address without its scheme after `/.well-known/tdl/`, so the terms at
+ * `https://m4ow.uk/mtm/2.txt` have their party list for `example.com` at
+ * `https://example.com/.well-known/tdl/m4ow.uk/mtm/2.txt`.
+ *
+ * Data created under a terms document may pass from one party to another
+ * only where each lists the other for that document, which is what
+ * `agreed` answers once it has the lists, and what `agreedNow` answers
+ * from the lists held. A list that cannot be fetched, or that is not held,
+ * proves nothing, so the answer is then false.
+ *
+ * Every list is kept in memory and in local storage, where storage is
+ * allowed, and is asked for again only when the copy is older than `ttl`.
+ * A failed fetch is remembered for the shorter `failureTtl`, so that a
+ * party with no file is not asked on every auction. Two questions about
+ * the same list while a fetch is in flight share the one request.
+ */
+
+export const WELL_KNOWN_PATH = '/.well-known/tdl/';
+export const STORAGE_KEY_PREFIX = '__tdl_parties:';
+export const DEFAULT_TTL = 24 * 60 * 60 * 1000;
+export const DEFAULT_FAILURE_TTL = 60 * 60 * 1000;
+
+// A host name of two or more labels. A line that is not one is ignored, so
+// that an error page served in place of a list names no party.
+const DOMAIN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+
+/**
+ * The address of the list of parties a domain has a terms document with.
+ *
+ * @param {string} domain the party that publishes the list
+ * @param {string} termsUrl the address of the terms document
+ * @returns {string|null} the address of the list, or null where the terms
+ *          document has no address a list could be found from
+ */
+export function partiesUrl(domain, termsUrl) {
+  let terms;
+  try {
+    terms = new URL(termsUrl);
+  } catch (e) {
+    return null;
+  }
+  return `https://${normaliseDomain(domain)}${WELL_KNOWN_PATH}${terms.host}${terms.pathname}`;
+}
+
+/**
+ * The domains in a party list. The list is text with one domain to a line.
+ * Blank lines are ignored, and so is anything from a `#` to the end of its
+ * line. Domains are compared without regard to case.
+ *
+ * @param {string} text the body of the list
+ * @returns {string[]} the domains, in lower case
+ */
+export function parseParties(text) {
+  if (typeof text !== 'string') {
+    return [];
+  }
+  const domains = text.split(/\r?\n/)
+    .map((line) => normaliseDomain(line.replace(/#.*$/, '')))
+    .filter((line) => DOMAIN.test(line));
+  return Array.from(new Set(domains));
+}
+
+function normaliseDomain(domain) {
+  return String(domain).trim().toLowerCase();
+}
+
+// Asked for without credentials, so that reading a party's list sends that
+// party no cookie.
+function defaultGet(url) {
+  return fetch(url, { credentials: 'omit' })
+    .then((response) => response.ok ? response.text() : Promise.reject(new Error(response.status)));
+}
+
+/**
+ * @param {Object} [options]
+ * @param {Object} [options.storage] a storage manager, used where local
+ *        storage is enabled
+ * @param {number} [options.ttl] how long a fetched list is used, in
+ *        milliseconds
+ * @param {number} [options.failureTtl] how long a failed fetch is
+ *        remembered, in milliseconds
+ * @param {function(string): Promise<string>} [options.get] fetches the
+ *        body of an address
+ * @param {function(): number} [options.now] the time in milliseconds
+ * @returns {{
+ *   agreed: function(string, string, string[]): Promise<boolean>,
+ *   agreedNow: function(string, string, string[]): boolean,
+ *   known: function(string, string, string[]): boolean
+ * }}
+ */
+export function tdlPartiesFactory({
+  storage,
+  ttl = DEFAULT_TTL,
+  failureTtl = DEFAULT_FAILURE_TTL,
+  get = defaultGet,
+  now = () => Date.now(),
+} = {}) {
+  // url -> { t: time fetched, d: domains, or null where the fetch failed }
+  const memory = new Map();
+  // url -> the promise of the fetch in flight for it
+  const inFlight = new Map();
+
+  const fresh = (entry) => !!entry && typeof entry.t === 'number' &&
+    (entry.d === null || Array.isArray(entry.d)) &&
+    now() - entry.t < (entry.d === null ? failureTtl : ttl);
+
+  function stored(url) {
+    try {
+      if (storage && storage.localStorageIsEnabled()) {
+        return JSON.parse(storage.getDataFromLocalStorage(STORAGE_KEY_PREFIX + url));
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function keep(url, domains) {
+    const entry = { t: now(), d: domains };
+    memory.set(url, entry);
+    try {
+      if (storage && storage.localStorageIsEnabled()) {
+        storage.setDataInLocalStorage(STORAGE_KEY_PREFIX + url, JSON.stringify(entry));
+      }
+    } catch (e) {}
+    return entry;
+  }
+
+  // The copy of a list held in memory or in storage, where it is fresh.
+  function held(url) {
+    let entry = memory.get(url);
+    if (!fresh(entry)) {
+      entry = stored(url);
+      if (fresh(entry)) {
+        memory.set(url, entry);
+      }
+    }
+    return fresh(entry) ? entry : null;
+  }
+
+  // The list at an address, from the copy held where there is one and from
+  // the address otherwise. Resolves to the domains, or to null where the
+  // list could not be fetched.
+  function list(url) {
+    const entry = held(url);
+    if (entry) {
+      return Promise.resolve(entry.d);
+    }
+    if (!inFlight.has(url)) {
+      const settle = (domains) => {
+        inFlight.delete(url);
+        return keep(url, domains).d;
+      };
+      inFlight.set(url, Promise.resolve()
+        .then(() => get(url))
+        .then((text) => settle(parseParties(text)), () => settle(null)));
+    }
+    return inFlight.get(url);
+  }
+
+  const asked = (sender, receiver, termsUrls) => !!sender && !!receiver &&
+    Array.isArray(termsUrls) && termsUrls.length > 0;
+
+  // The lists two parties need for the terms documents, each with the
+  // party it has to name.
+  const needed = (sender, receiver, termsUrls) => [].concat(...termsUrls.map((termsUrl) => [
+    { url: partiesUrl(sender, termsUrl), other: receiver },
+    { url: partiesUrl(receiver, termsUrl), other: sender },
+  ]));
+
+  const names = (domains, other) => Array.isArray(domains) && domains.includes(normaliseDomain(other));
+
+  return {
+    /**
+     * Whether data created under every one of the terms documents may pass
+     * from the sender to the receiver, being that each lists the other for
+     * each document. Fetches the lists that are not held.
+     *
+     * @param {string} sender the domain of the party passing the data on
+     * @param {string} receiver the domain of the party it would go to
+     * @param {string[]} termsUrls the addresses of the terms documents
+     * @returns {Promise<boolean>} false where there are no terms documents
+     */
+    agreed(sender, receiver, termsUrls) {
+      if (!asked(sender, receiver, termsUrls)) {
+        return Promise.resolve(false);
+      }
+      return Promise.all(needed(sender, receiver, termsUrls)
+        .map(({ url, other }) => url ? list(url).then((domains) => names(domains, other)) : false))
+        .then((answers) => answers.every(Boolean));
+    },
+
+    /**
+     * The answer `agreed` gives, from the lists held and without fetching.
+     *
+     * @returns {boolean} false where a list that is needed is not held
+     */
+    agreedNow(sender, receiver, termsUrls) {
+      return asked(sender, receiver, termsUrls) && needed(sender, receiver, termsUrls)
+        .every(({ url, other }) => !!url && names(held(url)?.d, other));
+    },
+
+    /**
+     * Whether every list `agreedNow` would read is held, so that fetching
+     * could not change its answer.
+     *
+     * @returns {boolean}
+     */
+    known(sender, receiver, termsUrls) {
+      return !asked(sender, receiver, termsUrls) || needed(sender, receiver, termsUrls)
+        .every(({ url }) => !url || !!held(url));
+    },
+  };
+}
