@@ -1238,6 +1238,33 @@ describe('51DegreesRtdProvider', function() {
       expect(callback4.called).to.be.false;
     });
 
+    it('adds one listener to the script however many auctions follow it', async function() {
+      const listeners = [];
+      window.fod = { onChange: (cb) => { listeners.push(cb); } };
+      const pending = { device: fiftyOneDegreesDevice, fodid: { idprobglobal: null } };
+
+      const callback1 = sinon.spy();
+      getBidRequestData(reqBidsConfigObj, callback1, { params: {} }, {});
+      listeners[0](pending);
+
+      // A second auction gets the data the script already has, without a listener of its own.
+      const reqBidsConfigObj1 = reqBidsConfigObj;
+      resetReqBidsConfigObj();
+      const callback2 = sinon.spy();
+      getBidRequestData(reqBidsConfigObj, callback2, { params: {} }, {});
+      expect(listeners).to.have.lengthOf(1);
+      expect(reqBidsConfigObj.ortb2Fragments.global.device.make).to.equal('Apple');
+
+      listeners[0]({ device: fiftyOneDegreesDevice, fodid: { idprobglobal: ID_GLOBAL_UID } });
+      expect(callback1.calledOnce).to.be.true;
+      expect(callback2.calledOnce).to.be.true;
+
+      // Released auctions are no longer followed.
+      listeners[0]({ device: fiftyOneDegreesDevice, fodid: { idprobglobal: ID_LIC_UID } });
+      expect(reqBidsConfigObj1.ortb2Fragments.global.user.eids[0].uids[0].id).to.equal(ID_GLOBAL_UID);
+      expect(reqBidsConfigObj.ortb2Fragments.global.user.eids[0].uids[0].id).to.equal(ID_GLOBAL_UID);
+    });
+
     it('does not take a null reason sentence for a 51Did', async function() {
       let listener;
       window.fod = { onChange: (cb) => { listener = cb; } };

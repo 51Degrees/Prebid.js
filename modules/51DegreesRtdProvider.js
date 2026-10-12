@@ -674,6 +674,44 @@ const enrichFromData = (data, reqBidsConfigObj, tdlUrl) => {
 // that arrives later still reaches the auctions after it.
 const overdueFods = new WeakSet();
 
+// One listener per script, shared by the auctions waiting on it, because the
+// script cannot remove a listener and one per auction would pile up for the
+// life of the page, each holding its auction's request.
+const followers = new WeakMap();
+
+/**
+ * Calls onData with a script's data now, if it has any, and each time it
+ * changes, until the returned function is called.
+ *
+ * @param {Object} fod The script's fod object
+ * @param {Function} onData Called with each answer
+ * @returns {Function} Stops calling onData
+ */
+const subscribe = (fod, onData) => {
+  let follower = followers.get(fod);
+  if (follower) {
+    follower.listeners.add(onData);
+    if (follower.data !== undefined) {
+      onData(follower.data);
+    }
+  } else {
+    follower = { data: undefined, listeners: new Set([onData]) };
+    followers.set(fod, follower);
+    // One parameter, because the script only answers a listener at once, when
+    // it already has data, if the listener takes exactly one argument.
+    fod.onChange((data) => {
+      follower.data = data;
+      // Here rather than in an auction's listener, because a 51Did may arrive
+      // while no auction is following the script.
+      if (!awaitsIdentifier(data)) {
+        overdueFods.delete(fod);
+      }
+      follower.listeners.forEach((listener) => listener(data));
+    });
+  }
+  return () => follower.listeners.delete(onData);
+};
+
 /**
  * Follows a 51Degrees script's data as it changes, and lets the auction go
  * once the data is final.
@@ -695,11 +733,10 @@ const overdueFods = new WeakSet();
  * @param {string} [tdlUrl] TDL URL passed from module config
  * @param {Function} isDone Whether the auction has already been released
  * @param {Function} done Releases the auction
+ * @returns {Function} Stops following the script
  */
-const followFod = (fod, reqBidsConfigObj, tdlUrl, isDone, done) => {
-  // One parameter, because the script only answers a listener at once, when
-  // it already has data, if the listener takes exactly one argument.
-  fod.onChange((data) => {
+const followFod = (fod, reqBidsConfigObj, tdlUrl, isDone, done) =>
+  subscribe(fod, (data) => {
     if (isDone()) {
       return;
     }
@@ -711,12 +748,8 @@ const followFod = (fod, reqBidsConfigObj, tdlUrl, isDone, done) => {
       logMessage('51Degrees data merged; waiting for the 51Did');
       return;
     }
-    if (!waiting) {
-      overdueFods.delete(fod);
-    }
     done();
   });
-};
 
 /**
  * @param {Object} reqBidsConfigObj Bid request configuration object
@@ -727,9 +760,11 @@ const followFod = (fod, reqBidsConfigObj, tdlUrl, isDone, done) => {
  */
 export const getBidRequestData = (reqBidsConfigObj, callback, moduleConfig, userConsent, timeout) => {
   let callbackCalled = false;
+  let unfollow = () => {};
   const callbackOnce = () => {
     if (!callbackCalled) {
       callbackCalled = true;
+      unfollow();
       callback();
     }
   };
@@ -747,7 +782,11 @@ export const getBidRequestData = (reqBidsConfigObj, callback, moduleConfig, user
     let followed = null;
     const follow = (fod) => {
       followed = fod;
-      followFod(fod, reqBidsConfigObj, tdlUrl, isDone, callbackOnce);
+      unfollow = followFod(fod, reqBidsConfigObj, tdlUrl, isDone, callbackOnce);
+      // The script may have answered, and the auction gone, before followFod returned.
+      if (callbackCalled) {
+        unfollow();
+      }
     };
     if (timeout > 0) {
       setTimeout(() => {
