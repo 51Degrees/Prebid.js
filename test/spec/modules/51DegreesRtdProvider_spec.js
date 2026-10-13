@@ -474,7 +474,7 @@ describe('51DegreesRtdProvider', function() {
       expect(result.device.make).to.equal('Apple');
     });
 
-    it('merges fodid data into user.eids when tdlUrl is supplied', function () {
+    it('merges fodid data into user.ext.eids when tdlUrl is supplied', function () {
       const data51 = {
         device: fiftyOneDegreesDevice,
         fodid: {
@@ -483,9 +483,9 @@ describe('51DegreesRtdProvider', function() {
         },
       };
       const result = convert51DegreesDataToOrtb2(data51, { tdlUrl: 'https://tdl.example/x' });
-      expect(result.user.eids).to.have.lengthOf(1);
-      expect(result.user.eids[0].uids).to.deep.equal([{ id: 'lic-uid', atype: 1 }, { id: 'global-uid', atype: 1 }]);
-      expect(result.user.eids[0].ext.tdl).to.deep.equal([MODEL_TERMS_URL, 'https://tdl.example/x']);
+      expect(result.user.ext.eids).to.have.lengthOf(1);
+      expect(result.user.ext.eids[0].uids).to.deep.equal([{ id: 'lic-uid', atype: 1 }, { id: 'global-uid', atype: 1 }]);
+      expect(result.user.ext.eids[0].ext.tdl).to.deep.equal([MODEL_TERMS_URL, 'https://tdl.example/x']);
     });
 
     it('returns only device mapping when ip and fodid are absent', function () {
@@ -770,34 +770,36 @@ describe('51DegreesRtdProvider', function() {
     it('drops non-string id values', function() {
       const result = convert51DegreesFoDiDToOrtb2(
         { idproblic: 123, idprobglobal: 'global-uid-base64' }, TDL_URL);
-      expect(result.user.eids).to.have.lengthOf(1);
-      expect(result.user.eids[0].uids).to.deep.equal([{ id: 'global-uid-base64', atype: 1 }]);
+      expect(result.user.ext.eids).to.have.lengthOf(1);
+      expect(result.user.ext.eids[0].uids).to.deep.equal([{ id: 'global-uid-base64', atype: 1 }]);
     });
 
     it('emits a full eids entry with tdlUrl', function() {
       const result = convert51DegreesFoDiDToOrtb2(fullFodid, TDL_URL);
       expect(result).to.deep.equal({
         user: {
-          eids: [{
-            inserter: '51degrees.com',
-            source: '51d.es',
-            mm: 5,
-            uids: [{ id: 'lic-uid-base64', atype: 1 }, { id: 'global-uid-base64', atype: 1 }],
-            ext: { tdl: [MODEL_TERMS_URL, TDL_URL] },
-          }],
+          ext: {
+            eids: [{
+              inserter: '51degrees.com',
+              source: '51d.es',
+              mm: 5,
+              uids: [{ id: 'lic-uid-base64', atype: 1 }, { id: 'global-uid-base64', atype: 1 }],
+              ext: { tdl: [MODEL_TERMS_URL, TDL_URL] },
+            }],
+          },
         },
       });
     });
 
     it('names the Model Terms alone when tdlUrl is falsy', function() {
       const result = convert51DegreesFoDiDToOrtb2(fullFodid, undefined);
-      expect(result.user.eids[0].ext.tdl).to.deep.equal([MODEL_TERMS_URL]);
-      expect(result.user.eids[0].uids).to.deep.equal([{ id: 'lic-uid-base64', atype: 1 }, { id: 'global-uid-base64', atype: 1 }]);
+      expect(result.user.ext.eids[0].ext.tdl).to.deep.equal([MODEL_TERMS_URL]);
+      expect(result.user.ext.eids[0].uids).to.deep.equal([{ id: 'lic-uid-base64', atype: 1 }, { id: 'global-uid-base64', atype: 1 }]);
     });
 
     it('names the Model Terms first and the publisher TDL second', function() {
       const result = convert51DegreesFoDiDToOrtb2(fullFodid, TDL_URL);
-      expect(result.user.eids[0].ext.tdl).to.deep.equal([MODEL_TERMS_URL, TDL_URL]);
+      expect(result.user.ext.eids[0].ext.tdl).to.deep.equal([MODEL_TERMS_URL, TDL_URL]);
     });
 
     it('gives every entry its own terms array', function() {
@@ -805,49 +807,49 @@ describe('51DegreesRtdProvider', function() {
         idproblic: 'p-lic',
         idrandlic: 'r-lic',
       }, TDL_URL);
-      expect(result.user.eids).to.have.lengthOf(2);
-      expect(result.user.eids[0].ext.tdl).to.not.equal(result.user.eids[1].ext.tdl);
-      result.user.eids[0].ext.tdl.push('https://elsewhere.example/y');
-      expect(result.user.eids[1].ext.tdl).to.deep.equal([MODEL_TERMS_URL, TDL_URL]);
+      expect(result.user.ext.eids).to.have.lengthOf(2);
+      expect(result.user.ext.eids[0].ext.tdl).to.not.equal(result.user.ext.eids[1].ext.tdl);
+      result.user.ext.eids[0].ext.tdl.push('https://elsewhere.example/y');
+      expect(result.user.ext.eids[1].ext.tdl).to.deep.equal([MODEL_TERMS_URL, TDL_URL]);
     });
 
     it('emits entry with only idproblic when idprobglobal is absent', function() {
       const result = convert51DegreesFoDiDToOrtb2({ idproblic: 'lic-only' }, TDL_URL);
-      expect(result.user.eids[0].uids).to.deep.equal([{ id: 'lic-only', atype: 1 }]);
+      expect(result.user.ext.eids[0].uids).to.deep.equal([{ id: 'lic-only', atype: 1 }]);
     });
 
     it('emits entry with only idprobglobal when idproblic is absent', function() {
       const result = convert51DegreesFoDiDToOrtb2({ idprobglobal: 'global-only' }, TDL_URL);
-      expect(result.user.eids[0].uids).to.deep.equal([{ id: 'global-only', atype: 1 }]);
+      expect(result.user.ext.eids[0].uids).to.deep.equal([{ id: 'global-only', atype: 1 }]);
     });
 
     it('uses constant inserter, source, and mm', function() {
       const result = convert51DegreesFoDiDToOrtb2(fullFodid, TDL_URL);
-      expect(result.user.eids[0].inserter).to.equal('51degrees.com');
-      expect(result.user.eids[0].source).to.equal('51d.es');
-      expect(result.user.eids[0].mm).to.equal(5);
+      expect(result.user.ext.eids[0].inserter).to.equal('51degrees.com');
+      expect(result.user.ext.eids[0].source).to.equal('51d.es');
+      expect(result.user.ext.eids[0].mm).to.equal(5);
     });
 
     it('omits matcher field', function() {
       const result = convert51DegreesFoDiDToOrtb2(fullFodid, TDL_URL);
-      expect(result.user.eids[0]).to.not.have.property('matcher');
+      expect(result.user.ext.eids[0]).to.not.have.property('matcher');
     });
 
     it('emits a Random entry with mm 0 and atype 1', function() {
       const result = convert51DegreesFoDiDToOrtb2(
         { idrandlic: 'rand-lic', idrandglobal: 'rand-global' }, TDL_URL);
-      expect(result.user.eids).to.have.lengthOf(1);
-      expect(result.user.eids[0].mm).to.equal(0);
-      expect(result.user.eids[0].uids).to.deep.equal(
+      expect(result.user.ext.eids).to.have.lengthOf(1);
+      expect(result.user.ext.eids[0].mm).to.equal(0);
+      expect(result.user.ext.eids[0].uids).to.deep.equal(
         [{ id: 'rand-lic', atype: 1 }, { id: 'rand-global', atype: 1 }]);
     });
 
     it('emits a Hashed Email entry with mm 3 and atype 3', function() {
       const result = convert51DegreesFoDiDToOrtb2(
         { idhemlic: 'hem-lic', idhemglobal: 'hem-global' }, TDL_URL);
-      expect(result.user.eids).to.have.lengthOf(1);
-      expect(result.user.eids[0].mm).to.equal(3);
-      expect(result.user.eids[0].uids).to.deep.equal(
+      expect(result.user.ext.eids).to.have.lengthOf(1);
+      expect(result.user.ext.eids[0].mm).to.equal(3);
+      expect(result.user.ext.eids[0].uids).to.deep.equal(
         [{ id: 'hem-lic', atype: 3 }, { id: 'hem-global', atype: 3 }]);
     });
 
@@ -860,12 +862,12 @@ describe('51DegreesRtdProvider', function() {
         idhemlic: 'h-lic',
         idhemglobal: 'h-global',
       }, TDL_URL);
-      expect(result.user.eids).to.have.lengthOf(3);
-      expect(result.user.eids.map((e) => e.mm)).to.deep.equal([5, 0, 3]);
-      expect(result.user.eids.every((e) => e.source === '51d.es')).to.equal(true);
-      expect(result.user.eids.every((e) => e.ext.tdl[0] === MODEL_TERMS_URL)).to.equal(true);
-      expect(result.user.eids.every((e) => e.ext.tdl[1] === TDL_URL)).to.equal(true);
-      expect(result.user.eids[2].uids).to.deep.equal(
+      expect(result.user.ext.eids).to.have.lengthOf(3);
+      expect(result.user.ext.eids.map((e) => e.mm)).to.deep.equal([5, 0, 3]);
+      expect(result.user.ext.eids.every((e) => e.source === '51d.es')).to.equal(true);
+      expect(result.user.ext.eids.every((e) => e.ext.tdl[0] === MODEL_TERMS_URL)).to.equal(true);
+      expect(result.user.ext.eids.every((e) => e.ext.tdl[1] === TDL_URL)).to.equal(true);
+      expect(result.user.ext.eids[2].uids).to.deep.equal(
         [{ id: 'h-lic', atype: 3 }, { id: 'h-global', atype: 3 }]);
     });
   });
@@ -1093,7 +1095,7 @@ describe('51DegreesRtdProvider', function() {
       expect(reqBidsConfigObj.ortb2Fragments.global).to.deep.equal(expectedORTB2Result);
     });
 
-    it('enriches ortb2 with ip and user.eids when data51 contains them', async function() {
+    it('enriches ortb2 with ip and user.ext.eids when data51 contains them', async function() {
       const data51 = {
         device: fiftyOneDegreesDevice,
         ip: { ip: '5.6.7.8', locationconfidence: 'high', countrycode3: 'USA' },
@@ -1116,11 +1118,27 @@ describe('51DegreesRtdProvider', function() {
       expect(callback.calledOnce).to.be.true;
       expect(reqBidsConfigObj.ortb2Fragments.global.device.ip).to.equal('5.6.7.8');
       expect(reqBidsConfigObj.ortb2Fragments.global.device.geo.country).to.equal('USA');
-      expect(reqBidsConfigObj.ortb2Fragments.global.user.eids).to.have.lengthOf(1);
-      expect(reqBidsConfigObj.ortb2Fragments.global.user.eids[0].uids)
+      expect(reqBidsConfigObj.ortb2Fragments.global.user.ext.eids).to.have.lengthOf(1);
+      expect(reqBidsConfigObj.ortb2Fragments.global.user.ext.eids[0].uids)
         .to.deep.equal([{ id: 'lic-uid', atype: 1 }, { id: 'global-uid', atype: 1 }]);
-      expect(reqBidsConfigObj.ortb2Fragments.global.user.eids[0].ext.tdl)
+      expect(reqBidsConfigObj.ortb2Fragments.global.user.ext.eids[0].ext.tdl)
         .to.deep.equal([MODEL_TERMS_URL, 'https://tdl.example/x']);
+    });
+
+    it('appends to eids already in user.ext.eids and leaves user.eids unset', async function() {
+      const otherEid = { source: 'pubcid.org', uids: [{ id: 'pub-uid', atype: 1 }] };
+      reqBidsConfigObj.ortb2Fragments.global.user = { ext: { eids: [otherEid] } };
+      window.fod = { complete: (cb) => cb({ fodid: { idproblic: 'lic-uid' } }) };
+      const callback = sinon.spy();
+      const moduleConfig = { params: { resourceKey: 'INVALID_RESOURCE_KEY' } };
+
+      getBidRequestData(reqBidsConfigObj, callback, moduleConfig, {});
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      const user = reqBidsConfigObj.ortb2Fragments.global.user;
+      expect(user.ext.eids.map((e) => e.source)).to.deep.equal(['pubcid.org', '51d.es']);
+      expect(user.ext.eids[0]).to.deep.equal(otherEid);
+      expect(user).to.not.have.property('eids');
     });
 
     it('does not overwrite a publisher-set device.ip / device.ipv6', async function() {
@@ -1170,7 +1188,7 @@ describe('51DegreesRtdProvider', function() {
 
       expect(callback.calledOnce).to.be.true;
       expect(loadExternalScriptStub.called).to.be.false;
-      const eids = reqBidsConfigObj.ortb2Fragments.global.user.eids;
+      const eids = reqBidsConfigObj.ortb2Fragments.global.user.ext.eids;
       expect(eids).to.have.lengthOf(2);
       expect(eids[1].mm).to.equal(3);
     });

@@ -244,7 +244,7 @@ export const deepSetNotEmptyValue = (obj, key, value) => {
  * @param {Object} data51 Response from 51Degrees API
  * @param {Object} [data51.device] Device data
  * @param {Object} [data51.ip] IP data (device.ip/ipv6 + device.geo)
- * @param {Object} [data51.fodid] 51DiD data (mapped to user.eids)
+ * @param {Object} [data51.fodid] 51DiD data (mapped to user.ext.eids)
  * @param {Object} [options]
  * @param {string} [options.tdlUrl] TDL URL passed through to the EID entry
  *
@@ -419,7 +419,7 @@ const FODID_EID = {
 };
 
 /**
- * Converts 51Degrees fodid (51DiD) data to ORTB2 user.eids entries.
+ * Converts 51Degrees fodid (51DiD) data to ORTB2 user.ext.eids entries.
  * Each identifier type becomes its own 51d.es source entry, because the
  * match method (mm) is an eid-level field and differs by type:
  * Probabilistic is mm 5 (inference) atype 1, Random is mm 0 (unknown)
@@ -438,7 +438,7 @@ const FODID_EID = {
  * @param {string} [fodid.idhemlic] License-tier Hashed Email 51DiD
  * @param {string} [fodid.idhemglobal] Global-tier Hashed Email 51DiD
  * @param {string} [tdlUrl] TDL URL passed from module config
- * @returns {Object} Enriched ORTB2 fragment ({user:{eids:[...]}}) or {} when
+ * @returns {Object} Enriched ORTB2 fragment ({user:{ext:{eids:[...]}}}) or {} when
  *                   no uids are available
  */
 export const convert51DegreesFoDiDToOrtb2 = (fodid, tdlUrl) => {
@@ -478,7 +478,11 @@ export const convert51DegreesFoDiDToOrtb2 = (fodid, tdlUrl) => {
     logWarn('tdlUrl is not configured; eids entries name the Model Terms alone in ext.tdl');
   }
 
-  return { user: { eids } };
+  // Prebid keeps eids in user.ext.eids: it moves user.eids there before
+  // RTD modules run, bid requests' userIdAsEids reads only that path, and
+  // ORTB 2.5 adapters overwrite it with user.eids. Writing user.eids here
+  // would hide the 51Did from most adapters and drop other IDs in others.
+  return { user: { ext: { eids } } };
 };
 
 // PMP localStorage contract, duplicated from pmp/src/storage.ts of the
